@@ -93,6 +93,62 @@ function fillPolygon(poly, callback) {
   }
 }
 
+function sampleStreetLabels(pts, name, stepMeters = 100) {
+  const out = [];
+  if (!name || pts.length < 2) return out;
+  const stepUnits = stepMeters / TILE_SIZE_METERS;
+  let accum = stepUnits * 0.5;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x0, y0] = pts[i];
+    const [x1, y1] = pts[i + 1];
+    const segLen = Math.hypot(x1 - x0, y1 - y0);
+    if (segLen < 0.01) continue;
+    while (accum <= segLen) {
+      const t = accum / segLen;
+      const dx = (x1 - x0) / segLen;
+      const dy = (y1 - y0) / segLen;
+      const off = 2.4;
+      out.push({
+        name,
+        x: +(x0 + (x1 - x0) * t - dy * off).toFixed(1),
+        y: +(y0 + (y1 - y0) * t + dx * off).toFixed(1),
+        angle: Math.atan2(dy, dx),
+      });
+      accum += stepUnits;
+    }
+    accum -= segLen;
+  }
+  if (out.length === 0) {
+    let len = 0;
+    for (let i = 0; i < pts.length - 1; i++) len += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+    if (len >= 12) {
+      const mid = pts[Math.floor(pts.length / 2)];
+      const i = Math.max(0, Math.floor(pts.length / 2) - 1);
+      const dx = pts[Math.min(i + 1, pts.length - 1)][0] - pts[i][0];
+      const dy = pts[Math.min(i + 1, pts.length - 1)][1] - pts[i][1];
+      out.push({ name, x: +mid[0].toFixed(1), y: +mid[1].toFixed(1), angle: Math.atan2(dy, dx) });
+    }
+  }
+  return out;
+}
+
+function dedupeStreetLabels(labels, minUnits = 35) {
+  const kept = [];
+  const byName = new Map();
+  for (const lab of labels) {
+    let list = byName.get(lab.name);
+    if (!list) { list = []; byName.set(lab.name, list); }
+    let close = false;
+    for (const p of list) {
+      if ((p.x - lab.x) ** 2 + (p.y - lab.y) ** 2 < minUnits * minUnits) { close = true; break; }
+    }
+    if (close) continue;
+    list.push(lab);
+    kept.push(lab);
+  }
+  return kept;
+}
+
 function distToSegmentSq(px, py, x1, y1, x2, y2) {
   const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
   if (l2 === 0) return (px - x1) ** 2 + (py - y1) ** 2;
@@ -168,49 +224,122 @@ function hashId(id) {
   return Math.abs(x);
 }
 
-function parseFloors(tags, id) {
+// Calculate footprint area in square meters (1 grid unit = 2m -> 1 sq unit = 4 m^2)
+function calcRingsAreaM2(rings) {
+  let totalAreaUnits = 0;
+  for (const ring of rings) {
+    let a = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+    }
+    totalAreaUnits += Math.abs(a) * 0.5;
+  }
+  return totalAreaUnits * (TILE_SIZE_METERS * TILE_SIZE_METERS);
+}
+
+function parseFloors(tags, id, areaM2 = 120) {
+  // 1. Explicit OSM tags always take priority! (74% of Poznań buildings have exact building:levels!)
   if (tags['building:levels']) {
     const lvl = parseFloat(tags['building:levels']);
-    if (!Number.isNaN(lvl) && lvl > 0) return Math.min(16, Math.max(1, Math.round(lvl)));
+    if (!Number.isNaN(lvl) && lvl > 0) {
+      return Math.min(16, Math.max(1, Math.round(lvl)));
+    }
   }
   if (tags.height) {
     const h = parseFloat(String(tags.height).replace('m', '').trim());
-    if (!Number.isNaN(h) && h > 0) return Math.min(16, Math.max(1, Math.round(h / 3.0)));
+    if (!Number.isNaN(h) && h > 0) {
+      return Math.min(16, Math.max(1, Math.round(h / 3.1)));
+    }
   }
-  if (tags.building === 'garages' || tags.building === 'garage' || tags.building === 'kiosk' || tags.building === 'shed') {
+
+  const b = (tags.building || '').toLowerCase();
+
+  // 2. Explicitly 1-story small/utility structures
+  if (
+    b === 'garages' ||
+    b === 'garage' ||
+    b === 'kiosk' ||
+    b === 'shed' ||
+    b === 'outbuilding' ||
+    b === 'allotment_house' ||
+    b === 'bungalow' ||
+    b === 'carport' ||
+    b === 'roof' ||
+    b === 'service' ||
+    b === 'transformer_tower' ||
+    b === 'bunker' ||
+    b === 'tent' ||
+    b === 'pavilion' ||
+    b === 'greenhouse' ||
+    tags.power === 'substation'
+  ) {
     return 1;
   }
-  if (tags.building === 'retail' || tags.building === 'supermarket' || tags.building === 'commercial') {
-    return 2;
+
+  // 3. Footprint area heuristics for untagged buildings (building=yes without levels):
+  // - < 55 m² -> garage, shed, kiosk, small outbuilding -> 1 floor
+  if (areaM2 < 55) {
+    return 1;
   }
-  if (tags.building === 'school' || tags.building === 'kindergarten') {
-    return 3;
+
+  // 4. Single-family houses, detached, semi-detached, terraced houses
+  if (b === 'house' || b === 'detached' || b === 'semidetached_house' || b === 'terrace' || b === 'residential') {
+    return areaM2 < 95 ? 1 : 2;
   }
-  if (tags.building === 'church' || tags.amenity === 'place_of_worship') {
-    return 6;
+
+  // 5. Retail, supermarkets, warehouses, industrial halls (wide footprint, low height: 1-2 floors)
+  if (b === 'retail' || b === 'supermarket' || b === 'warehouse' || b === 'industrial' || b === 'commercial') {
+    return areaM2 > 600 ? 2 : 1;
   }
-  if (tags.building === 'apartments') {
-    return (hashId(id) % 4 === 0) ? 11 : 5;
+
+  // 6. Schools, kindergartens, public buildings
+  if (b === 'school' || tags.amenity === 'school') return 3;
+  if (b === 'kindergarten' || tags.amenity === 'kindergarten') return 2;
+  if (b === 'church' || b === 'chapel' || tags.amenity === 'place_of_worship') {
+    return b === 'chapel' ? 2 : 5;
   }
-  return 2 + (hashId(id) % 3);
+
+  // 7. Untagged apartments or generic building=yes based on realistic footprint size
+  if (b === 'apartments') {
+    // Untagged apartment blocks in Poznań are typically 4-5 floors (high-rises 11-16 floors are already tagged in OSM!)
+    return areaM2 > 350 ? 5 : 4;
+  }
+
+  // Generic untagged building=yes:
+  // 55..220 m² -> single-family house or small service building (1-2 floors)
+  if (areaM2 < 110) return 1;
+  if (areaM2 < 260) return 2;
+  // Larger untagged urban building -> 3 floors
+  return 3;
 }
 
-function pickBuildingStyle(tags, id, floors) {
+function pickBuildingStyle(tags, id, floors, areaM2 = 120) {
   const street = (tags['addr:street'] || '').toLowerCase();
   const num = (tags['addr:housenumber'] || '').toLowerCase();
   if (street.includes('naramowicka') && num === '47') {
     return BLDG_STYLE.RATUSZ_SPECIAL;
   }
-  if (tags.building === 'church' || tags.amenity === 'place_of_worship' || tags.building === 'school') {
+  const b = (tags.building || '').toLowerCase();
+  if (b === 'church' || tags.amenity === 'place_of_worship' || b === 'school') {
     return BLDG_STYLE.CHURCH_MONUMENT;
   }
-  if (tags.building === 'garages' || tags.building === 'garage' || tags.building === 'kiosk' || tags.building === 'retail') {
+  if (
+    b === 'garages' ||
+    b === 'garage' ||
+    b === 'kiosk' ||
+    b === 'retail' ||
+    b === 'outbuilding' ||
+    b === 'service' ||
+    b === 'shed' ||
+    b === 'roof' ||
+    areaM2 < 55
+  ) {
     return BLDG_STYLE.MARKET_STALL;
   }
-  if (floors >= 8 || tags.building === 'office' || tags.building === 'commercial') {
+  if (floors >= 6 || b === 'office' || b === 'commercial') {
     return BLDG_STYLE.MODERN_OFFICE;
   }
-  if (tags.building === 'apartments') {
+  if (b === 'apartments' || floors >= 4) {
     return (hashId(id) % 2 === 0) ? BLDG_STYLE.KAMIENICA_PASTEL : BLDG_STYLE.MODERN_OFFICE;
   }
   const h = hashId(id) % 10;
@@ -305,7 +434,49 @@ async function main() {
   const vectorTrams = [];
   const vectorBuildings = [];
   const landmarks = [];
-  const streetLabels = new Map();
+  const pois = [];
+  const houseNumbers = [];
+  const houseNumDedup = new Set();
+  const poiDedup = new Set();
+  const streetLabels = [];
+
+  function addHouseNumber(num, street, x, y, floors = 2) {
+    if (!num) return;
+    const cleanNum = String(num).trim();
+    if (!cleanNum || cleanNum.length > 10) return;
+    const rx = Math.round(x);
+    const ry = Math.round(y);
+    if (rx < 4 || rx >= GRID_SIZE - 4 || ry < 4 || ry >= GRID_SIZE - 4) return;
+    const key = `${cleanNum}_${Math.round(rx / 2)}_${Math.round(ry / 2)}`;
+    if (houseNumDedup.has(key)) return;
+    houseNumDedup.add(key);
+    houseNumbers.push({
+      num: cleanNum,
+      street: street || '',
+      x: rx,
+      y: ry,
+      floors,
+    });
+  }
+
+  function addPoi(name, kind, x, y, floors = 2) {
+    if (!name) return;
+    const cleanName = String(name).trim();
+    if (!cleanName) return;
+    const rx = Math.round(x);
+    const ry = Math.round(y);
+    if (rx < 4 || rx >= GRID_SIZE - 4 || ry < 4 || ry >= GRID_SIZE - 4) return;
+    const key = `${cleanName.toLowerCase()}_${Math.round(rx / 4)}_${Math.round(ry / 4)}`;
+    if (poiDedup.has(key)) return;
+    poiDedup.add(key);
+    pois.push({
+      name: cleanName,
+      kind: kind || 'business',
+      x: rx,
+      y: ry,
+      floors,
+    });
+  }
 
   // 1. Vector Landuse (Parks, Grass, Parking lots, Plazas, Water)
   function processLandArea(pts, tags) {
@@ -444,14 +615,11 @@ async function main() {
       });
     }
 
-    if (tags.name && !streetLabels.has(tags.name)) {
-      const mid = pts[Math.floor(pts.length / 2)];
-      if (mid[0] >= 12 && mid[0] < GRID_SIZE - 12 && mid[1] >= 12 && mid[1] < GRID_SIZE - 12) {
-        streetLabels.set(tags.name, {
-          name: tags.name,
-          x: Math.round(mid[0]),
-          y: Math.round(mid[1]),
-        });
+    if (tags.name && kind !== 'footway') {
+      for (const lab of sampleStreetLabels(pts, tags.name, 100)) {
+        if (lab.x >= 4 && lab.x < GRID_SIZE - 4 && lab.y >= 4 && lab.y < GRID_SIZE - 4) {
+          streetLabels.push(lab);
+        }
       }
     }
   }
@@ -491,8 +659,9 @@ async function main() {
     }
     if (!inBounds) return;
 
-    const floors = parseFloors(tags, id);
-    let style = pickBuildingStyle(tags, id, floors);
+    const areaM2 = calcRingsAreaM2(cleanedRings);
+    const floors = parseFloors(tags, id, areaM2);
+    let style = pickBuildingStyle(tags, id, floors, areaM2);
 
     let containsNara47 = false;
     for (const poly of cleanedRings) {
@@ -535,6 +704,29 @@ async function main() {
 
       const street = tags['addr:street'] || '';
       const num = tags['addr:housenumber'] || '';
+      if (num) {
+        addHouseNumber(num, street || tags['addr:place'] || '', cx, cy, floors);
+      }
+
+      const poiName = tags.name || tags.brand || tags.operator || '';
+      if (
+        poiName &&
+        (tags.shop ||
+          tags.office ||
+          tags.craft ||
+          tags.amenity ||
+          tags.company ||
+          tags.industrial ||
+          tags.healthcare ||
+          tags.tourism ||
+          tags.building === 'commercial' ||
+          tags.building === 'retail' ||
+          tags.building === 'office')
+      ) {
+        const kind = tags.shop ? 'shop' : (tags.office || tags.company || tags.craft || tags.industrial ? 'company' : 'amenity');
+        addPoi(poiName, kind, cx, cy, floors);
+      }
+
       let labelName = tags.name || '';
 
       if (containsNara47 || (street.toLowerCase().includes('naramowicka') && num === '47')) {
@@ -597,7 +789,29 @@ async function main() {
     const [gx, gy] = latLonToGrid(n.lat, n.lon);
     const ix = Math.round(gx);
     const iy = Math.round(gy);
-    if (ix < 15 || ix >= GRID_SIZE - 15 || iy < 15 || iy >= GRID_SIZE - 15) continue;
+    if (ix < 8 || ix >= GRID_SIZE - 8 || iy < 8 || iy >= GRID_SIZE - 8) continue;
+
+    if (t['addr:housenumber']) {
+      addHouseNumber(t['addr:housenumber'], t['addr:street'] || t['addr:place'] || '', gx, gy, heightGrid[iy * GRID_SIZE + ix] || 2);
+    }
+
+    const poiName = t.name || t.brand || t.operator || '';
+    if (
+      poiName &&
+      (t.shop ||
+        t.office ||
+        t.craft ||
+        t.company ||
+        t.amenity ||
+        t.industrial ||
+        t.healthcare ||
+        t.tourism)
+    ) {
+      if (t.amenity !== 'bench' && t.amenity !== 'waste_basket' && t.amenity !== 'recycling') {
+        const kind = t.shop ? 'shop' : (t.office || t.company || t.craft || t.industrial ? 'company' : 'amenity');
+        addPoi(poiName, kind, gx, gy, heightGrid[iy * GRID_SIZE + ix] || 2);
+      }
+    }
 
     let label = null;
     if (t['addr:street'] === 'Naramowicka' && t['addr:housenumber'] === '47' && t.name) {
@@ -640,7 +854,9 @@ async function main() {
     vectorTrams,
     vectorBuildings,
     landmarks: landmarks.slice(0, 75),
-    streets: Array.from(streetLabels.values()),
+    pois,
+    houseNumbers,
+    streets: dedupeStreetLabels(streetLabels),
   };
 
   const jsonPath = path.resolve('data/poznan-tilemap.json');
