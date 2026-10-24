@@ -1,0 +1,382 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+}
+
+body, html {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #0d0d11;
+  font-family: 'Courier New', Courier, monospace;
+  color: #f4e8c1;
+}
+
+#game-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: grab;
+}
+
+#game-canvas:active {
+  cursor: grabbing;
+}
+
+#label-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Top HUD bar */
+#hud-top {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.hud-score-box,
+.hud-stats-box {
+  background: rgba(12, 12, 16, 0.88);
+  border: 2px solid #d99b26;
+  padding: 8px 14px;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.75);
+}
+
+.hud-label {
+  display: block;
+  font-size: 11px;
+  color: #d99b26;
+  font-weight: bold;
+  letter-spacing: 1.5px;
+}
+
+.hud-value {
+  font-size: 18px;
+  font-weight: bold;
+  color: #59ff67;
+  text-shadow: 0 0 6px rgba(89, 255, 103, 0.45);
+}
+
+.hud-stats-box {
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
+  min-width: 195px;
+}
+
+.hud-center-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.surface-pill {
+  background: rgba(12, 13, 18, 0.9);
+  border: 1px solid #8a641b;
+  padding: 3px 12px;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  color: #59ff67;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.7);
+}
+
+.drift-badge {
+  margin-top: 3px;
+  background: #d92b2b;
+  color: #fff3b0;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 2px 6px;
+  letter-spacing: 1px;
+  text-align: center;
+  border: 1px solid #ffd15c;
+  animation: pulseDrift 0.25s infinite alternate;
+}
+
+.drift-badge.hidden {
+  display: none;
+}
+
+@keyframes pulseDrift {
+  from { transform: scale(1); }
+  to { transform: scale(1.06); }
+}
+
+.speedo-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.speed-value {
+  font-size: 24px;
+  font-weight: 900;
+  color: #ffd15c;
+  text-shadow: 0 0 8px rgba(255, 209, 92, 0.45);
+}
+
+.speed-unit {
+  font-size: 11px;
+  color: #b5aa8c;
+  font-weight: bold;
+}
+
+.gear-badge {
+  background: #292b36;
+  border: 1px solid #d99b26;
+  color: #59ff67;
+  font-weight: 900;
+  font-size: 12px;
+  padding: 1px 6px;
+}
+
+.car-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.car-selector button {
+  background: #1d1f29;
+  color: #d6c89e;
+  border: 1px solid #6b5019;
+  padding: 6px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.1s;
+}
+
+.car-selector button:hover {
+  background: #332a18;
+  color: #fff;
+}
+
+.car-selector button.active {
+  background: #47330d;
+  border-color: #ffd15c;
+  color: #59ff67;
+  box-shadow: inset 0 0 6px rgba(255, 209, 92, 0.35);
+}
+
+.landmark-buttons button.btn-accent {
+  background: #233824;
+  border-color: #46994d;
+  color: #8aff94;
+}
+
+.landmark-buttons button.btn-accent:hover {
+  background: #2f5231;
+  border-color: #59ff67;
+  color: #fff;
+}
+
+.hud-stats-box .accent {
+  color: #ffd15c;
+  font-weight: bold;
+}
+
+.hud-stats-box .accent-green {
+  color: #59ff67;
+  font-weight: bold;
+}
+
+.gpu-stats {
+  color: #59ff67;
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.street-banner {
+  background: rgba(10, 10, 14, 0.9);
+  border-top: 3px solid #f0b028;
+  border-bottom: 3px solid #f0b028;
+  padding: 6px 26px;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #ffe07d;
+  text-shadow: 2px 2px 0 #000, -1px -1px 0 #7a3e00;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.75);
+}
+
+/* Left Control Panel */
+#control-panel {
+  position: absolute;
+  top: 84px;
+  left: 16px;
+  width: 270px;
+  background: rgba(14, 15, 20, 0.92);
+  border: 2px solid #d99b26;
+  padding: 14px;
+  box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.8);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#control-panel h2 {
+  font-size: 17px;
+  color: #ffd15c;
+  letter-spacing: 1.5px;
+  border-bottom: 1px solid #4d3b16;
+  padding-bottom: 4px;
+}
+
+#control-panel .subtitle {
+  font-size: 11px;
+  color: #b5aa8c;
+  margin-top: -6px;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.control-group label {
+  color: #e6d7ad;
+  font-weight: bold;
+}
+
+.landmark-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.landmark-buttons button {
+  background: #232530;
+  color: #ffe299;
+  border: 1px solid #8a641b;
+  padding: 6px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s, transform 0.05s;
+}
+
+.landmark-buttons button:hover {
+  background: #3b3018;
+  border-color: #f0b028;
+  color: #fff;
+}
+
+.landmark-buttons button:active {
+  transform: translateY(1px);
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #f0b028;
+  cursor: pointer;
+}
+
+.checkboxes label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: normal;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.checkboxes input[type="checkbox"] {
+  accent-color: #f0b028;
+  cursor: pointer;
+}
+
+.controls-hint {
+  border-top: 1px solid #3c321d;
+  padding-top: 8px;
+  font-size: 11px;
+  color: #b7ad96;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+kbd {
+  background: #292b36;
+  border: 1px solid #786a4c;
+  border-radius: 2px;
+  padding: 1px 4px;
+  font-size: 10px;
+  color: #ffd15c;
+}
+
+/* Minimap Panel */
+#minimap-panel {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  background: rgba(14, 15, 20, 0.92);
+  border: 2px solid #d99b26;
+  padding: 8px;
+  box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.8);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.minimap-header {
+  font-size: 10px;
+  font-weight: bold;
+  color: #ffd15c;
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+
+#minimap-canvas {
+  display: block;
+  width: 200px;
+  height: 200px;
+  border: 1px solid #634b1a;
+  image-rendering: pixelated;
+  cursor: crosshair;
+}
+
+#tile-inspector {
+  font-size: 11px;
+  color: #59ff67;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}

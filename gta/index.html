@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GTA 1: POZNAŃ (ul. Naramowicka 47 - 1x1 km) - WebGL GPU 2.5D</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game-container">
+    <!-- GPU Accelerated WebGL Canvas for Ground + 2.5D Buildings -->
+    <canvas id="game-canvas"></canvas>
+    <!-- Lightweight 2D Overlay for crisp text labels & crosshair -->
+    <canvas id="label-canvas"></canvas>
+
+    <!-- GTA 1 Style Top HUD -->
+    <div id="hud-top">
+      <div class="hud-score-box">
+        <span class="hud-label">WYNIK / DRIFT COMBO</span>
+        <span id="hud-score" class="hud-value">000000</span>
+        <div id="hud-drift-badge" class="drift-badge hidden">DRIFT! +0</div>
+      </div>
+      <div class="hud-center-stack">
+        <div id="hud-street-banner" class="street-banner">NARAMOWICKA 47</div>
+        <div id="hud-surface-pill" class="surface-pill">NAWIERZCHNIA: JEZDNIA (ASFALT) • PRZYCZEPNOŚĆ 100%</div>
+      </div>
+      <div class="hud-stats-box">
+        <div class="speedo-row">
+          <span id="hud-speed" class="speed-value">0</span>
+          <span class="speed-unit">KM/H</span>
+          <span id="hud-gear" class="gear-badge">N</span>
+        </div>
+        <div>POZYCJA: <span id="hud-coords" class="accent">X:250 Y:250</span> • <span id="hud-fps" class="accent-green">60 FPS</span></div>
+      </div>
+    </div>
+
+    <!-- Left Panel: Controls & Landmarks -->
+    <aside id="control-panel">
+      <h2>GTA 1: POZNAŃ DRIFT</h2>
+      <p class="subtitle">Fizyka jazdy 2.5D • Poślizgi • Odbicia wektorowe</p>
+
+      <div class="control-group">
+        <label>Wybierz pojazd (<kbd>1</kbd>–<kbd>4</kbd>):</label>
+        <div class="car-selector" id="car-selector">
+          <button data-car="0" class="active">1. Cossack GT</button>
+          <button data-car="1">2. Polonez Caro</button>
+          <button data-car="2">3. Policja 997</button>
+          <button data-car="3">4. Taxi Winogrady</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>Szybki skok pojazdem (Teleport):</label>
+        <div class="landmark-buttons" id="quick-jumps">
+          <button data-x="250" data-y="250">Naramowicka 47</button>
+          <button data-x="275" data-y="200">Rondo Solidarności</button>
+          <button data-x="235" data-y="160">Os. Kosmonautów</button>
+          <button data-x="119" data-y="288">Os. Pod Lipami</button>
+          <button data-x="365" data-y="255">Wilczak / Serbska</button>
+          <button data-x="393" data-y="195">Miasto Wnętrz / Giga</button>
+          <button data-x="190" data-y="360">Ul. Murawa / Park</button>
+          <button id="btn-respawn-road" class="btn-accent">Na najbliższą drogę (R)</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label for="persp-slider">Głębia 2.5D (wysokość ścian): <span id="persp-val">100%</span></label>
+        <input type="range" id="persp-slider" min="0" max="200" value="100" />
+      </div>
+
+      <div class="control-group">
+        <label for="zoom-slider">Bazowy zoom kamery: <span id="zoom-val">1.15x</span></label>
+        <input type="range" id="zoom-slider" min="40" max="280" value="115" />
+      </div>
+
+      <div class="control-group checkboxes">
+        <label><input type="checkbox" id="toggle-cam-follow" checked /> Kamera GTA 1 (śledzenie + dynamiczny zoom)</label>
+        <label><input type="checkbox" id="toggle-labels" checked /> Nazwy ulic i punktów</label>
+        <label><input type="checkbox" id="toggle-grid" /> Siatka kafelków (2×2m)</label>
+        <label><input type="checkbox" id="toggle-collision" /> Podgląd kolizji wektorowych i przyczepności</label>
+      </div>
+
+      <div class="controls-hint">
+        <div><kbd>W</kbd><kbd>S</kbd> / <kbd>↑</kbd><kbd>↓</kbd> – Gaz / Hamulec / Wsteczny</div>
+        <div><kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd> – Skręt (zależny od przyczepności)</div>
+        <div><kbd>Spacja</kbd> – <strong>Hamulec ręczny (DRIFT / Boczurek)</strong></div>
+        <div><kbd>H</kbd> – Klakson / Syrena policyjna • <kbd>R</kbd> – Reset na drogę</div>
+        <div><kbd>1</kbd>–<kbd>4</kbd> – Zmiana auta • <kbd>C</kbd> – Naprawa karoserii</div>
+        <div id="gpu-stats" class="gpu-stats">Trójkąty GPU: --</div>
+      </div>
+    </aside>
+
+    <!-- Bottom-Right Minimap Radar -->
+    <div id="minimap-panel">
+      <div class="minimap-header">RADAR (1×1 KM) — KLIKNIJ BY SKOCZYĆ</div>
+      <canvas id="minimap-canvas" width="200" height="200"></canvas>
+      <div id="tile-inspector">Kafel: Naramowicka 47</div>
+    </div>
+  </div>
+
+  <script src="data/poznan-tilemap.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

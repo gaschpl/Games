@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#172014" />
+  <title>Strzelanina na Łące w Tucznie u Taty i Zosi</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🌿%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <canvas id="game" aria-label="Strzelanina na Łące w Tucznie u Taty i Zosi. WASD chodzenie, E podnosi broń albo wsiada na jednorożca, Q zmienia broń, spacja albo prawy przycisk strzela."></canvas>
+  <div class="vignette" aria-hidden="true"></div>
+  <div class="hud">
+    <p class="title">Strzelanina na Łące w Tucznie u Taty i Zosi</p>
+    <p class="score" id="score">Poziom 1 · punkty 0/10</p>
+    <p class="hint" id="hint">WASD lub strzałki — chodzenie<br />Shift — bieg · klik — idź w miejsce<br />Pistolet, łapacz i biały jednorożec</p>
+    <button type="button" id="music" class="music" aria-pressed="true">Muzyka: włączona</button>
+  </div>
+  <p class="banner" id="banner" hidden>Poziom 2</p>
+  <script src="js/game.js"></script>
+</body>
+</html>
