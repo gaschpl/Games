@@ -1444,6 +1444,284 @@
     player.driftCombo = 0;
   }
 
+  // --- 8.8. GTA 1 Retro Web Audio Synthesizer (Engine RPM, Tire Screech, Grass Slide, Crashes, Horn & 997 Siren) ---
+  const sfx = {
+    ctx: null,
+    masterGain: null,
+    engOsc1: null,
+    engOsc2: null,
+    engFilter: null,
+    engGain: null,
+    skidFilter: null,
+    skidGain: null,
+    sirenOsc: null,
+    sirenGain: null,
+    volume: 0.75,
+    muted: false,
+    ready: false,
+    lastCrashSoundTime: 0,
+
+    init() {
+      if (this.ready) {
+        if (this.ctx && this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+        return;
+      }
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+
+      const ctx = new AudioCtx();
+      this.ctx = ctx;
+
+      const master = ctx.createGain();
+      master.gain.value = this.muted ? 0 : this.volume;
+      master.connect(ctx.destination);
+      this.masterGain = master;
+
+      // 1. Continuous Engine Synthesizer (Dual Sawtooth + Sub-Triangle through resonant Lowpass)
+      const engFilter = ctx.createBiquadFilter();
+      engFilter.type = 'lowpass';
+      engFilter.frequency.value = 240;
+      engFilter.Q.value = 3.2;
+
+      const engGain = ctx.createGain();
+      engGain.gain.value = 0.14;
+
+      const osc1 = ctx.createOscillator();
+      osc1.type = 'sawtooth';
+      osc1.frequency.value = 52;
+
+      const osc2 = ctx.createOscillator();
+      osc2.type = 'triangle';
+      osc2.frequency.value = 26;
+
+      osc1.connect(engFilter);
+      osc2.connect(engFilter);
+      engFilter.connect(engGain);
+      engGain.connect(master);
+      osc1.start();
+      osc2.start();
+
+      this.engOsc1 = osc1;
+      this.engOsc2 = osc2;
+      this.engFilter = engFilter;
+      this.engGain = engGain;
+
+      // 2. Continuous Looping White Noise Buffer for Tire Screech & Grass/Gravel Sliding
+      const bufSize = ctx.sampleRate * 2;
+      const noiseBuf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const data = noiseBuf.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      this.noiseBuf = noiseBuf;
+
+      const noiseSrc = ctx.createBufferSource();
+      noiseSrc.buffer = noiseBuf;
+      noiseSrc.loop = true;
+
+      const skidFilter = ctx.createBiquadFilter();
+      skidFilter.type = 'bandpass';
+      skidFilter.frequency.value = 1250;
+      skidFilter.Q.value = 4.5;
+
+      const skidGain = ctx.createGain();
+      skidGain.gain.value = 0.0;
+
+      noiseSrc.connect(skidFilter);
+      skidFilter.connect(skidGain);
+      skidGain.connect(master);
+      noiseSrc.start();
+
+      this.skidFilter = skidFilter;
+      this.skidGain = skidGain;
+
+      // 3. Police 997 Two-Tone Siren Oscillator ("Le-On")
+      const sirenOsc = ctx.createOscillator();
+      sirenOsc.type = 'square';
+      sirenOsc.frequency.value = 580;
+
+      const sirenFilter = ctx.createBiquadFilter();
+      sirenFilter.type = 'lowpass';
+      sirenFilter.frequency.value = 1600;
+
+      const sirenGain = ctx.createGain();
+      sirenGain.gain.value = 0.0;
+
+      sirenOsc.connect(sirenFilter);
+      sirenFilter.connect(sirenGain);
+      sirenGain.connect(master);
+      sirenOsc.start();
+
+      this.sirenOsc = sirenOsc;
+      this.sirenGain = sirenGain;
+
+      this.ready = true;
+    },
+
+    setVolume(val) {
+      this.volume = Math.max(0, Math.min(1, val));
+      if (this.masterGain && this.ctx) {
+        this.masterGain.gain.setTargetAtTime(this.muted ? 0 : this.volume, this.ctx.currentTime, 0.02);
+      }
+    },
+
+    toggleMute() {
+      this.muted = !this.muted;
+      this.setVolume(this.volume);
+      const volValEl = document.getElementById('volume-val');
+      if (volValEl) {
+        volValEl.textContent = this.muted ? 'WYCISZONY' : `${Math.round(this.volume * 100)}%`;
+      }
+    },
+
+    updateContinuous(throttleInput) {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+
+      // Calculate realistic GTA 1 multi-gear RPM curve
+      const kmh = player.speed * 7.2;
+      const gearThresholds = [0, 35, 70, 115, 155, 220];
+      let gearIdx = 0;
+      for (let i = 0; i < gearThresholds.length - 1; i++) {
+        if (kmh >= gearThresholds[i]) gearIdx = i;
+      }
+      const gMin = gearThresholds[gearIdx];
+      const gMax = gearThresholds[gearIdx + 1] || 220;
+      const gearRpmNorm = Math.max(0, Math.min(1, (kmh - gMin) / Math.max(10, gMax - gMin)));
+
+      // Different engine tone per car (Cossack GT higher sporty pitch, Polonez throatier low pitch)
+      const carPitchMul = [1.18, 0.88, 1.05, 0.96][player.carIdx] || 1.0;
+      const wheelspinBoost = (player.drifting && throttleInput) ? 24 : 0;
+      const baseFreq = (42 + gearRpmNorm * 95 + (kmh * 0.28) + throttleInput * 16 + wheelspinBoost) * carPitchMul;
+
+      this.engOsc1.frequency.setTargetAtTime(baseFreq, now, 0.035);
+      this.engOsc2.frequency.setTargetAtTime(baseFreq * 0.5, now, 0.035);
+      this.engFilter.frequency.setTargetAtTime(190 + baseFreq * 3.8 + throttleInput * 220, now, 0.04);
+      const targetEngVol = 0.09 + Math.min(0.16, (player.speed / 25) * 0.10 + throttleInput * 0.06);
+      this.engGain.gain.setTargetAtTime(targetEngVol, now, 0.04);
+
+      // Tire Screech (Asphalt/Sidewalk/Tram) vs Grass Dirt Rumble
+      if (player.drifting && player.speed > 2.2) {
+        const slideIntensity = Math.min(1.0, (Math.abs(player.lateralSpeed) + (player.handbrake ? 4.0 : 0)) / 9.0);
+        if (player.surfaceType === GROUND.GRASS) {
+          // Low gritty turf/gravel slide sound in park
+          this.skidFilter.type = 'lowpass';
+          this.skidFilter.frequency.setTargetAtTime(360 + player.speed * 14, now, 0.03);
+          this.skidFilter.Q.setTargetAtTime(1.4, now, 0.03);
+          this.skidGain.gain.setTargetAtTime(slideIntensity * 0.24, now, 0.03);
+        } else {
+          // Classic GTA 1 high-pitched tire screech on asphalt/concrete/rails!
+          const pitchMod = 1100 + Math.min(600, Math.abs(player.lateralSpeed) * 45) + (player.surfaceType === GROUND.TRAM_TRACK ? 350 : 0);
+          this.skidFilter.type = 'bandpass';
+          this.skidFilter.frequency.setTargetAtTime(pitchMod, now, 0.03);
+          this.skidFilter.Q.setTargetAtTime(5.5, now, 0.03);
+          this.skidGain.gain.setTargetAtTime(slideIntensity * 0.22, now, 0.025);
+        }
+      } else {
+        this.skidGain.gain.setTargetAtTime(0.0, now, 0.04);
+      }
+
+      // Police 997 Siren or silence
+      if (player.sirenActive && CAR_SPECS[player.carIdx].isPolice) {
+        const isHigh = Math.sin(player.sirenPhase * 8.5) > 0;
+        this.sirenOsc.frequency.setTargetAtTime(isHigh ? 780 : 580, now, 0.015);
+        this.sirenGain.gain.setTargetAtTime(0.11, now, 0.03);
+      } else {
+        this.sirenGain.gain.setTargetAtTime(0.0, now, 0.03);
+      }
+    },
+
+    playCrash(impactSpeed) {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      if (now - this.lastCrashSoundTime < 0.09) return;
+      this.lastCrashSoundTime = now;
+
+      const strength = Math.min(1.0, impactSpeed / 16.0);
+
+      // 1. Metallic crunch noise burst
+      const noise = this.ctx.createBufferSource();
+      noise.buffer = this.noiseBuf;
+
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(520 + Math.random() * 280, now);
+      filter.Q.setValueAtTime(1.8, now);
+
+      const nGain = this.ctx.createGain();
+      const dur = 0.14 + strength * 0.22;
+      nGain.gain.setValueAtTime(0.15 + strength * 0.35, now);
+      nGain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      noise.connect(filter);
+      filter.connect(nGain);
+      nGain.connect(this.masterGain);
+      noise.start(now);
+      noise.stop(now + dur);
+
+      // 2. Low body thump / bounce resonance
+      const thump = this.ctx.createOscillator();
+      thump.type = 'triangle';
+      thump.frequency.setValueAtTime(115 + strength * 40, now);
+      thump.frequency.exponentialRampToValueAtTime(28, now + 0.18);
+
+      const tGain = this.ctx.createGain();
+      tGain.gain.setValueAtTime(0.25 + strength * 0.35, now);
+      tGain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
+
+      thump.connect(tGain);
+      tGain.connect(this.masterGain);
+      thump.start(now);
+      thump.stop(now + 0.20);
+    },
+
+    playCurbBump() {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(95, now);
+      osc.frequency.exponentialRampToValueAtTime(34, now + 0.08);
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.18, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
+
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(now);
+      osc.stop(now + 0.09);
+    },
+
+    playHorn() {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      // Dual-tone retro car horn (e.g., 410 Hz + 510 Hz)
+      const freqs = player.carIdx === 1 ? [340, 425] : [420, 525];
+      for (const f of freqs) {
+        const osc = this.ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(f, now);
+
+        const flt = this.ctx.createBiquadFilter();
+        flt.type = 'lowpass';
+        flt.frequency.setValueAtTime(1300, now);
+
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.11, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+
+        osc.connect(flt);
+        flt.connect(g);
+        g.connect(this.masterGain);
+        osc.start(now);
+        osc.stop(now + 0.27);
+      }
+    },
+  };
+
   // --- 9. Camera & Controls ---
   const state = {
     camX: player.x,
@@ -1467,18 +1745,24 @@
 
   const keys = new Set();
   window.addEventListener('keydown', (e) => {
+    sfx.init();
     const k = e.key.toLowerCase();
     if (k === ' ') e.preventDefault();
     keys.add(k);
 
     if (k >= '1' && k <= '4') {
       selectCar(Number(k) - 1);
+      sfx.playCurbBump();
     } else if (k === 'r') {
       respawnPlayerAt(player.x, player.y);
+      sfx.playCurbBump();
     } else if (k === 'c') {
       player.damage = 0;
+    } else if (k === 'm') {
+      sfx.toggleMute();
     } else if (k === 'h') {
       player.sirenActive = !player.sirenActive;
+      sfx.playHorn();
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2;
         spawnParticle(
@@ -1490,6 +1774,7 @@
     }
   });
   window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+  window.addEventListener('mousedown', () => sfx.init());
 
   function selectCar(idx) {
     player.carIdx = Math.max(0, Math.min(CAR_SPECS.length - 1, idx));
@@ -1578,6 +1863,18 @@
     document.getElementById('zoom-val').textContent = `${state.zoom.toFixed(2)}x`;
   });
 
+  const volumeSliderEl = document.getElementById('volume-slider');
+  if (volumeSliderEl) {
+    volumeSliderEl.addEventListener('input', (e) => {
+      sfx.init();
+      const val = Number(e.target.value);
+      sfx.muted = val === 0;
+      sfx.setVolume(val / 100);
+      const volValEl = document.getElementById('volume-val');
+      if (volValEl) volValEl.textContent = val === 0 ? 'WYCISZONY' : `${val}%`;
+    });
+  }
+
   document.getElementById('toggle-labels').addEventListener('change', (e) => {
     state.showLabels = e.target.checked;
   });
@@ -1631,6 +1928,7 @@
       const isRoad = gType >= GROUND.ROAD_ASPHALT;
       if (wasRoad !== isRoad && player.speed > 4.0) {
         player.curbBumpTimer = 0.18;
+        sfx.playCurbBump();
       }
       player.lastSurfaceType = gType;
     }
@@ -1921,6 +2219,7 @@
       player.collisionFlash = 0.14;
       player.damage = Math.min(100, player.damage + maxImpactSpeed * 0.8);
       state.shakePower = Math.min(1.2, maxImpactSpeed * 0.065);
+      sfx.playCrash(maxImpactSpeed);
       if (maxImpactSpeed > 6.5) {
         player.driftCombo = 0; // Hard crash resets active drift combo
       }
@@ -1944,6 +2243,7 @@
     // --- Drift Detection, Tire Skidmarks & Smoke Emitters ---
     const isSliding = (Math.abs(vLat) > 2.35 && player.speed > 3.2) || (handbrake && player.speed > 2.8) || (throttleInput && Math.abs(vFwd) < 4.5 && gType === GROUND.GRASS);
     player.drifting = isSliding;
+    sfx.updateContinuous(throttleInput);
 
     if (isSliding) {
       const rearX = player.x - tx * (halfLen * 0.72);
