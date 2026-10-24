@@ -13,6 +13,56 @@
     <!-- Lightweight 2D Overlay for crisp text labels & crosshair -->
     <canvas id="label-canvas"></canvas>
 
+    <!-- GTA 1 Retro Map Selection Modal on Startup -->
+    <div id="map-select-modal" class="map-modal-backdrop">
+      <div class="map-modal-box">
+        <div class="map-modal-tag">GRAND THEFT AUTO 1 • POZNAŃ &amp; OKOLICE (WEBGL 2.5D)</div>
+        <h1>WYBIERZ MAPĘ DO JAZDY</h1>
+        <p class="map-modal-desc">
+          Każda mapa obsługuje pełną fizykę jazdy 2.5D z poślizgami (hamulec ręczny <kbd>Spacja</kbd>),
+          syntezator dźwięków Web Audio, ślady opon oraz wektorowe odbicia od budynków.
+        </p>
+
+        <div class="map-cards">
+          <button type="button" class="map-card active" data-select-map="naramowicka">
+            <span class="map-card-badge">MAPA 1 • PIERWOTNA (MIASTO 1×1 KM)</span>
+            <h3>POZNAŃ: UL. NARAMOWICKA 47</h3>
+            <p>Winogrady • Os. Kosmonautów • Os. Pod Lipami • Rondo Solidarności</p>
+            <ul>
+              <li>Gęsta siatka ulic, chodników, parków i bloków z wielkiej płyty</li>
+              <li>Ruch uliczny AI oraz tramwaje MPK (Linia 3 i 10)</li>
+              <li>Rozmiar świata: <strong>1000 × 1000 m</strong> (500×500 jedn.)</li>
+            </ul>
+            <span class="map-card-cta">GRAJ NA NARAMOWICKIEJ 47 →</span>
+          </button>
+
+          <button type="button" class="map-card" data-select-map="trasa">
+            <span class="map-card-badge badge-green">MAPA 2 • NOWA TRASA (21.8 KM)</span>
+            <h3>TRASA: OPENSITE → KICIN → KARPIA 21A</h3>
+            <p>Wronczyńska 104 (Tuczno) → SP Kicin → Koziegłowy → Most Lecha → Karpia 21A</p>
+            <ul>
+              <li>3 strefy dokładne (promień 500m) + korytarz szosy (pas 50m na boki)</li>
+              <li>Długa trasa przez Puszczę Zielonkę i wjazd do Poznania (1016 budynków)</li>
+              <li>Rozmiar świata: <strong>13.1 × 10.5 km</strong> (21.8 km szosy)</li>
+            </ul>
+            <span class="map-card-cta">JEDŹ TRASĄ OPENSITE → KARPIA 21A →</span>
+          </button>
+
+          <button type="button" class="map-card" data-select-map="sehnde">
+            <span class="map-card-badge">MAPA 3 • SEHNDE (ŚREDNICA 2 KM)</span>
+            <h3>SEHNDE: ACHARDSTRAßE 54</h3>
+            <p>31319 Sehnde, Niemcy • Lidl, Aldi, REWE, Volksbank</p>
+            <ul>
+              <li>Miasto w kole o średnicy 2 km wokół Achardstraße 54</li>
+              <li>1726 budynków, ulice i chodniki z OSM</li>
+              <li>Rozmiar świata: <strong>2000 × 2000 m</strong></li>
+            </ul>
+            <span class="map-card-cta">GRAJ W SEHNDE →</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- GTA 1 Style Top HUD -->
     <div id="hud-top">
       <div class="hud-score-box">
@@ -23,29 +73,45 @@
       <div class="hud-center-stack">
         <div id="hud-street-banner" class="street-banner">NARAMOWICKA 47</div>
         <div id="hud-surface-pill" class="surface-pill">NAWIERZCHNIA: JEZDNIA (ASFALT) • PRZYCZEPNOŚĆ 100%</div>
+        <div id="hud-action-prompt" class="action-prompt">NACIŚNIJ [F] LUB [ENTER] ABY WYSIĄŚĆ Z POJAZDU</div>
       </div>
       <div class="hud-stats-box">
         <div class="speedo-row">
+          <span id="hud-mode-badge" class="gear-badge" style="background:#3d2c0e;color:#ffd15c;">AUTO</span>
           <span id="hud-speed" class="speed-value">0</span>
           <span class="speed-unit">KM/H</span>
           <span id="hud-gear" class="gear-badge">N</span>
         </div>
-        <div>POZYCJA: <span id="hud-coords" class="accent">X:250 Y:250</span> • <span id="hud-fps" class="accent-green">60 FPS</span></div>
+        <div>POZYCJA: <span id="hud-coords" class="accent">X:250 Y:250</span> • <span id="hud-fps" class="accent-green">60 FPS</span> • <a href="trasa.html" style="color:#59ff67;text-decoration:underline;pointer-events:auto;">[Mapa 2]</a> • <a href="sehnde.html" style="color:#ffd15c;text-decoration:underline;pointer-events:auto;">[Mapa 3: Sehnde]</a></div>
       </div>
     </div>
 
     <!-- Left Panel: Controls & Landmarks -->
     <aside id="control-panel">
-      <h2>GTA 1: POZNAŃ DRIFT</h2>
-      <p class="subtitle">Fizyka jazdy 2.5D • Poślizgi • Odbicia wektorowe</p>
+      <div class="panel-header-row">
+        <div>
+          <h2 id="panel-map-title">GTA 1: POZNAŃ DRIFT</h2>
+          <p class="subtitle" id="panel-map-subtitle">Fizyka jazdy 2.5D • Poślizgi • Odbicia wektorowe</p>
+        </div>
+        <button type="button" id="btn-open-map-modal" class="btn-change-map" title="Zmień mapę (M)">ZMIEŃ MAPĘ</button>
+      </div>
+
+      <div class="control-group">
+        <label>Aktywna mapa:</label>
+        <div class="car-selector" id="map-switcher-Quick">
+          <button type="button" data-switch-map="naramowicka" class="active">1. Naramowicka 47</button>
+          <button type="button" data-switch-map="trasa">2. Opensite → Karpia</button>
+          <button type="button" data-switch-map="sehnde">3. Sehnde</button>
+        </div>
+      </div>
 
       <div class="control-group">
         <label>Wybierz pojazd (<kbd>1</kbd>–<kbd>4</kbd>):</label>
         <div class="car-selector" id="car-selector">
-          <button data-car="0" class="active">1. Cossack GT</button>
-          <button data-car="1">2. Polonez Caro</button>
-          <button data-car="2">3. Policja 997</button>
-          <button data-car="3">4. Taxi Winogrady</button>
+          <button data-car="0" class="active">1. Nissan Leaf 2013</button>
+          <button data-car="1">2. VW Touran 1.9 TDI</button>
+          <button data-car="2">3. Golf Sportsvan 1.5 TSI</button>
+          <button data-car="3">4. BMW X1 2.0d 2018</button>
         </div>
       </div>
 
@@ -59,8 +125,13 @@
           <button data-x="365" data-y="255">Wilczak / Serbska</button>
           <button data-x="393" data-y="195">Miasto Wnętrz / Giga</button>
           <button data-x="190" data-y="360">Ul. Murawa / Park</button>
-          <button id="btn-respawn-road" class="btn-accent">Na najbliższą drogę (R)</button>
         </div>
+        <button type="button" id="btn-respawn-road" class="btn-accent" style="margin-top:4px;padding:6px;font-family:inherit;font-size:11px;font-weight:bold;cursor:pointer;border:1px solid #46994d;background:#233824;color:#8aff94;">Na najbliższą drogę (R)</button>
+      </div>
+
+      <div class="control-group hidden" id="route-progress-group">
+        <label for="route-progress">Postęp trasy (Teleport 0%–100%): <span id="route-pct">0%</span></label>
+        <input type="range" id="route-progress" min="0" max="1000" value="0" />
       </div>
 
       <div class="control-group">
@@ -79,18 +150,21 @@
       </div>
 
       <div class="control-group checkboxes">
+        <label><input type="checkbox" id="toggle-traffic" checked /> Ruch drogowy (Auta AI i Tramwaje MPK) (<kbd>T</kbd>)</label>
         <label><input type="checkbox" id="toggle-cam-follow" checked /> Kamera GTA 1 (śledzenie + dynamiczny zoom)</label>
         <label><input type="checkbox" id="toggle-labels" checked /> Nazwy ulic i punktów</label>
         <label><input type="checkbox" id="toggle-grid" /> Siatka kafelków (2×2m)</label>
         <label><input type="checkbox" id="toggle-collision" /> Podgląd kolizji wektorowych i przyczepności</label>
       </div>
+      <button type="button" id="btn-toggle-traffic" class="btn-accent" style="padding:6px;font-family:inherit;font-size:11px;font-weight:bold;cursor:pointer;border:1px solid #d99b26;background:#3b2d10;color:#ffe07d;">Ruch drogowy: WŁĄCZONY (T)</button>
 
       <div class="controls-hint">
-        <div><kbd>W</kbd><kbd>S</kbd> / <kbd>↑</kbd><kbd>↓</kbd> – Gaz / Hamulec / Wsteczny</div>
-        <div><kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd> – Skręt (zależny od przyczepności)</div>
-        <div><kbd>Spacja</kbd> – <strong>Hamulec ręczny (DRIFT / Boczurek)</strong></div>
-        <div><kbd>H</kbd> – Klakson / Syrena policyjna • <kbd>R</kbd> – Reset na drogę</div>
-        <div><kbd>1</kbd>–<kbd>4</kbd> – Zmiana auta • <kbd>C</kbd> – Naprawa karoserii</div>
+        <div><kbd>F</kbd> / <kbd>Enter</kbd> – <strong>Wsiądź / Wysiądź z pojazdu</strong></div>
+        <div><kbd>LPM</kbd> / <kbd>Ctrl</kbd> / <kbd>Spacja (pieszo)</kbd> – <strong>Strzał z pistoletu</strong></div>
+        <div><kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd> / <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> – Jazda / Chodzenie ludzikiem</div>
+        <div><kbd>Spacja (w aucie)</kbd> – <strong>Hamulec ręczny (DRIFT)</strong></div>
+        <div>Touran sam zmienia 6 biegów (dłuższe sprzęgło). Golf to DSG 7, BMW automat 8.</div>
+        <div><kbd>H</kbd> – Klakson • <kbd>R</kbd> – Reset na drogę • <kbd>1</kbd>–<kbd>4</kbd> – Auto</div>
         <div id="gpu-stats" class="gpu-stats">Trójkąty GPU: --</div>
       </div>
     </aside>
@@ -104,6 +178,8 @@
   </div>
 
   <script src="data/poznan-tilemap.js"></script>
+  <script src="data/trasa-opensite-karpia.js"></script>
+  <script src="data/sehnde-achardstrasse54.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

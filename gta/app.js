@@ -1,23 +1,33 @@
 (() => {
-  const mapData = window.POZNAN_TILEMAP;
-  if (!mapData) {
-    alert('Brak danych mapy w data/poznan-tilemap.js! Uruchom: node scripts/build-map.mjs');
+  const NARA_MAP = window.POZNAN_TILEMAP;
+  const TRASA_MAP = window.TRASA_OPENSITE_MAP;
+  const SEHNDE_MAP = window.SEHNDE_MAP;
+  if (!NARA_MAP && !TRASA_MAP) {
+    alert('Brak danych mapy w data/poznan-tilemap.js lub data/trasa-opensite-karpia.js!');
     return;
   }
 
-  const GRID = mapData.meta.gridWidth; // 500 units (1 unit = 2 meters, total 1000x1000m)
+  let activeMapKey = 'naramowicka'; // 'naramowicka' | 'trasa' | 'sehnde'
+  function usesSectorMap() {
+    return activeMapKey === 'trasa' || activeMapKey === 'sehnde';
+  }
+  let mapData = NARA_MAP || TRASA_MAP;
+  let WORLD_W = mapData.meta.gridWidth || mapData.meta.worldWidth || 500;
+  let WORLD_H = mapData.meta.gridHeight || mapData.meta.worldHeight || 500;
+  let GRID = WORLD_W;
   const BASE_TILE_PX = 16;
 
   function decodeUint8(b64) {
+    if (!b64) return null;
     const bin = atob(b64);
     const arr = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
     return arr;
   }
 
-  const groundGrid = decodeUint8(mapData.groundBase64);
-  const heightGrid = decodeUint8(mapData.heightBase64);
-  const styleGrid = decodeUint8(mapData.styleBase64);
+  let groundGrid = decodeUint8(mapData.groundBase64);
+  let heightGrid = decodeUint8(mapData.heightBase64);
+  let styleGrid = decodeUint8(mapData.styleBase64);
 
   const GROUND = {
     URBAN_PAVED: 0,
@@ -79,7 +89,7 @@
     },
   };
 
-  // --- 1. Initialize WebGL Context & Shaders ---
+  // --- 1. Initialize WebGL Context & Shaders (Pure WebGL like Map 1 & trasa-app.js!) ---
   const canvas = document.getElementById('game-canvas');
   const labelCanvas = document.getElementById('label-canvas');
   const lctx = labelCanvas.getContext('2d');
@@ -96,9 +106,42 @@
     return;
   }
 
-  // --- 2. Build Smooth High-Res Ground Texture (4096 x 4096) ---
-  const GROUND_TEX_SIZE = 4096;
-  const SCALE = GROUND_TEX_SIZE / GRID;
+  // --- 2A. 1x1 km Sector Ground Baker for Map 2 (Trasa Opensite -> Kicin -> Karpia 21A) ---
+  // Exact 1:1 implementation from trasa-app.js: bakes each 500x500 unit (1x1 km) sector ONCE
+  // into a 4096x4096 WebGL texture with mipmaps (8.192 px/unit — identical to Naramowicka 47!)
+  const SECTOR_UNITS = 500;
+  const SECTOR_TEX_PX = 4096;
+  const SECTOR_SCALE = SECTOR_TEX_PX / SECTOR_UNITS;
+
+  function getPtsBBox(pts, pad = 0) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const [x, y] of pts) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    return { minX: minX - pad, maxX: maxX + pad, minY: minY - pad, maxY: maxY + pad };
+  }
+
+  function boxesOverlap(a, b) {
+    return a.maxX >= b.minX && a.minX <= b.maxX && a.maxY >= b.minY && a.minY <= b.maxY;
+  }
+
+  let landuseWithBBox = [];
+  let roadsWithBBox = [];
+  let tramsWithBBox = [];
+  let bldgsWithBBox = [];
+  let trasaAnchors = [];
+  let trasaRoutePts = [];
+  let trasaCorrRad = 25;
+  let globalOverview = null;
+  const sectorCache = new Map();
+
+  const bakeCanvas = document.createElement('canvas');
+  bakeCanvas.width = SECTOR_TEX_PX;
+  bakeCanvas.height = SECTOR_TEX_PX;
+  const bctx = bakeCanvas.getContext('2d');
 
   function createPattern(size, drawFn) {
     const c = document.createElement('canvas');
@@ -106,14 +149,395 @@
     c.height = size;
     const ctx = c.getContext('2d');
     drawFn(ctx, size);
-    return ctx.createPattern(c, 'repeat');
+    return bctx.createPattern(c, 'repeat');
   }
+
+  // Exact same 3 patterns used by both Map 1 and trasa-app.js!
+  const sharedUrbanPattern = createPattern(32, (c, s) => {
+    c.fillStyle = '#33363d'; c.fillRect(0, 0, s, s);
+    c.fillStyle = '#2e3138'; c.fillRect(0, 0, 16, 16); c.fillRect(16, 16, 16, 16);
+    c.fillStyle = '#393c44'; c.fillRect(4, 6, 3, 3); c.fillRect(20, 22, 3, 3);
+  });
+
+  const sharedGrassPattern = createPattern(32, (c, s) => {
+    c.fillStyle = '#2b4724'; c.fillRect(0, 0, s, s);
+    c.fillStyle = '#33542b';
+    for (let y = 0; y < s; y += 8) {
+      for (let x = (y % 16 === 0 ? 0 : 4); x < s; x += 8) {
+        c.fillRect(x, y, 3, 3);
+      }
+    }
+    c.fillStyle = '#233b1d';
+    c.fillRect(6, 10, 3, 2); c.fillRect(22, 26, 3, 2);
+  });
+
+  const sharedPlazaPattern = createPattern(24, (c, s) => {
+    c.fillStyle = '#5e564b'; c.fillRect(0, 0, s, s);
+    c.fillStyle = '#4f483e';
+    c.fillRect(0, 0, s, 2); c.fillRect(0, 12, s, 2);
+    c.fillRect(0, 0, 2, 12); c.fillRect(12, 12, 2, 12);
+  });
+
+  function clearSectorCache() {
+    for (const entry of sectorCache.values()) {
+      gl.deleteTexture(entry.tex);
+      gl.deleteBuffer(entry.vbo);
+    }
+    sectorCache.clear();
+  }
+
+  function getOrBakeSector(secX, secY) {
+    const key = `${secX}_${secY}`;
+    if (sectorCache.has(key)) {
+      return sectorCache.get(key);
+    }
+
+    const originX = secX * SECTOR_UNITS;
+    const originY = secY * SECTOR_UNITS;
+    const secBBox = {
+      minX: originX,
+      maxX: originX + SECTOR_UNITS,
+      minY: originY,
+      maxY: originY + SECTOR_UNITS,
+    };
+
+    const S = SECTOR_SCALE; // 8.192 px per unit (exact match to Naramowicka 47!)
+    const toPxX = (wx) => (wx - originX) * S;
+    const toPxY = (wy) => (wy - originY) * S;
+
+    bctx.fillStyle = '#0c0e13';
+    bctx.fillRect(0, 0, SECTOR_TEX_PX, SECTOR_TEX_PX);
+
+    bctx.fillStyle = sharedUrbanPattern;
+    bctx.strokeStyle = sharedUrbanPattern;
+    bctx.lineCap = 'round';
+    bctx.lineJoin = 'round';
+
+    for (const a of trasaAnchors) {
+      bctx.beginPath();
+      bctx.arc(toPxX(a.x), toPxY(a.y), a.radiusUnits * S, 0, Math.PI * 2);
+      bctx.fill();
+    }
+    if (trasaRoutePts.length >= 2) {
+      bctx.beginPath();
+      bctx.moveTo(toPxX(trasaRoutePts[0][0]), toPxY(trasaRoutePts[0][1]));
+      for (let i = 1; i < trasaRoutePts.length; i++) {
+        bctx.lineTo(toPxX(trasaRoutePts[i][0]), toPxY(trasaRoutePts[i][1]));
+      }
+      bctx.lineWidth = trasaCorrRad * 2 * S;
+      bctx.stroke();
+    }
+
+    // Layer 1: Smooth Vector Landuse Polygons
+    for (const area of landuseWithBBox) {
+      if (!boxesOverlap(area.bbox, secBBox)) continue;
+      bctx.beginPath();
+      bctx.moveTo(toPxX(area.pts[0][0]), toPxY(area.pts[0][1]));
+      for (let i = 1; i < area.pts.length; i++) {
+        bctx.lineTo(toPxX(area.pts[i][0]), toPxY(area.pts[i][1]));
+      }
+      bctx.closePath();
+
+      if (area.kind === 'grass' || area.kind === 'forest') {
+        bctx.fillStyle = sharedGrassPattern;
+        bctx.fill();
+        bctx.strokeStyle = '#22381c';
+        bctx.lineWidth = 2;
+        bctx.stroke();
+      } else if (area.kind === 'water') {
+        bctx.fillStyle = '#1d4d75';
+        bctx.fill();
+        bctx.strokeStyle = '#3674a8';
+        bctx.lineWidth = 3;
+        bctx.stroke();
+      } else if (area.kind === 'plaza') {
+        bctx.fillStyle = sharedPlazaPattern;
+        bctx.fill();
+      } else if (area.kind === 'paved') {
+        bctx.fillStyle = '#3b3e46';
+        bctx.fill();
+      }
+    }
+
+    function strokeRoadPath(pts) {
+      bctx.beginPath();
+      bctx.moveTo(toPxX(pts[0][0]), toPxY(pts[0][1]));
+      for (let i = 1; i < pts.length; i++) {
+        bctx.lineTo(toPxX(pts[i][0]), toPxY(pts[i][1]));
+      }
+      bctx.stroke();
+    }
+
+    const sectorRoads = roadsWithBBox.filter((r) => boxesOverlap(r.bbox, secBBox));
+
+    // Layer 2A: Smooth Footways
+    bctx.lineCap = 'round';
+    bctx.lineJoin = 'round';
+    for (const r of sectorRoads) {
+      if (r.kind !== 'footway') continue;
+      bctx.strokeStyle = '#43464d';
+      bctx.lineWidth = (r.w + 0.45) * S;
+      strokeRoadPath(r.pts);
+      bctx.strokeStyle = '#686b73';
+      bctx.lineWidth = r.w * S;
+      strokeRoadPath(r.pts);
+    }
+
+    // Layer 2B: Outer Curb Shadow for Car Roads
+    for (const r of sectorRoads) {
+      if (r.kind === 'footway') continue;
+      bctx.strokeStyle = '#1b1c21';
+      bctx.lineWidth = (r.w + 2.1) * S;
+      strokeRoadPath(r.pts);
+    }
+
+    // Layer 2C: Smooth Sidewalks along Car Roads
+    for (const r of sectorRoads) {
+      if (r.kind === 'footway') continue;
+      bctx.strokeStyle = '#70737c';
+      bctx.lineWidth = (r.w + 1.7) * S;
+      strokeRoadPath(r.pts);
+    }
+
+    // Layer 2D: Inner Curb Edge
+    for (const r of sectorRoads) {
+      if (r.kind === 'footway') continue;
+      bctx.strokeStyle = '#4e5159';
+      bctx.lineWidth = (r.w + 0.35) * S;
+      strokeRoadPath(r.pts);
+    }
+
+    // Layer 2E: Smooth Road Carriageway
+    for (const r of sectorRoads) {
+      if (r.kind === 'footway') continue;
+      if (r.kind === 'cobble') {
+        bctx.strokeStyle = '#423d3a';
+      } else if (r.kind === 'plaza') {
+        bctx.strokeStyle = '#5e564b';
+      } else {
+        bctx.strokeStyle = '#25272e';
+      }
+      bctx.lineWidth = r.w * S;
+      strokeRoadPath(r.pts);
+    }
+
+    // Layer 2F: GTA 1 Style Road Lane Markings
+    bctx.save();
+    bctx.lineCap = 'butt';
+    bctx.setLineDash([2.2 * S, 2.2 * S]);
+    for (const r of sectorRoads) {
+      if (!r.hasCenterLine && !r.isMainRoute) continue;
+      bctx.strokeStyle = (r.isMainRoute || r.prio >= 5)
+        ? 'rgba(235, 200, 90, 0.65)'
+        : 'rgba(210, 215, 225, 0.50)';
+      bctx.lineWidth = 0.22 * S;
+      strokeRoadPath(r.pts);
+    }
+    bctx.restore();
+
+    // Layer 3: Smooth Tram Tracks
+    for (const tr of tramsWithBBox) {
+      if (!boxesOverlap(tr.bbox, secBBox)) continue;
+      bctx.strokeStyle = '#383634';
+      bctx.lineWidth = 1.45 * S;
+      strokeRoadPath(tr.pts);
+
+      bctx.save();
+      bctx.lineCap = 'butt';
+      bctx.setLineDash([0.28 * S, 0.55 * S]);
+      bctx.strokeStyle = '#544e46';
+      bctx.lineWidth = 1.2 * S;
+      strokeRoadPath(tr.pts);
+      bctx.restore();
+
+      bctx.strokeStyle = '#9aa4b2';
+      bctx.lineWidth = 0.65 * S;
+      strokeRoadPath(tr.pts);
+      bctx.strokeStyle = '#383634';
+      bctx.lineWidth = 0.35 * S;
+      strokeRoadPath(tr.pts);
+    }
+
+    // Layer 4: Ambient Drop Shadows under 2.5D Buildings
+    bctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+    for (const b of bldgsWithBBox) {
+      if (!boxesOverlap(b.bbox, secBBox)) continue;
+      const shOff = Math.min(2.5, (b.floors || 3) * 0.35) * S;
+      for (const ring of b.rings) {
+        if (ring.length < 3) continue;
+        bctx.beginPath();
+        bctx.moveTo(toPxX(ring[0][0]) + shOff, toPxY(ring[0][1]) + shOff);
+        for (let i = 1; i < ring.length; i++) {
+          bctx.lineTo(toPxX(ring[i][0]) + shOff, toPxY(ring[i][1]) + shOff);
+        }
+        bctx.closePath();
+        bctx.fill();
+      }
+    }
+
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bakeCanvas);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bldgAtlasTex);
+
+    const x0 = originX, y0 = originY;
+    const x1 = originX + SECTOR_UNITS, y1 = originY + SECTOR_UNITS;
+    const quadVerts = new Float32Array([
+      x0, y0, 0, 0, 0, 0, 0, 1, 1, 1,
+      x1, y0, 0, 1, 0, 0, 0, 1, 1, 1,
+      x1, y1, 0, 1, 1, 0, 0, 1, 1, 1,
+      x0, y0, 0, 0, 0, 0, 0, 1, 1, 1,
+      x1, y1, 0, 1, 1, 0, 0, 1, 1, 1,
+      x0, y1, 0, 0, 1, 0, 0, 1, 1, 1,
+    ]);
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+    if (sectorCache.size > 24) {
+      const oldestKey = sectorCache.keys().next().value;
+      const old = sectorCache.get(oldestKey);
+      gl.deleteTexture(old.tex);
+      gl.deleteBuffer(old.vbo);
+      sectorCache.delete(oldestKey);
+    }
+
+    const entry = { tex, vbo };
+    sectorCache.set(key, entry);
+    return entry;
+  }
+
+  function buildGlobalOverview(mData) {
+    const wW = mData.meta.worldWidth || 6583;
+    const wH = mData.meta.worldHeight || 5261;
+    const texSize = 2048;
+    const gc = document.createElement('canvas');
+    gc.width = texSize;
+    gc.height = texSize;
+    const ctx = gc.getContext('2d');
+
+    ctx.fillStyle = '#0c0e13';
+    ctx.fillRect(0, 0, texSize, texSize);
+
+    ctx.save();
+    ctx.scale(texSize / wW, texSize / wH);
+
+    ctx.fillStyle = '#294522';
+    ctx.strokeStyle = '#294522';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const a of trasaAnchors) {
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, a.radiusUnits, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (trasaRoutePts.length >= 2) {
+      ctx.beginPath();
+      ctx.moveTo(trasaRoutePts[0][0], trasaRoutePts[0][1]);
+      for (let i = 1; i < trasaRoutePts.length; i++) ctx.lineTo(trasaRoutePts[i][0], trasaRoutePts[i][1]);
+      ctx.lineWidth = trasaCorrRad * 2;
+      ctx.stroke();
+
+      ctx.strokeStyle = '#25272e';
+      ctx.lineWidth = 6;
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ffd15c';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, gc);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bldgAtlasTex);
+
+    const quadVerts = new Float32Array([
+      0, 0, -0.02, 0, 0, 0, 0, 1, 1, 1,
+      wW, 0, -0.02, 1, 0, 0, 0, 1, 1, 1,
+      wW, wH, -0.02, 1, 1, 0, 0, 1, 1, 1,
+      0, 0, -0.02, 0, 0, 0, 0, 1, 1, 1,
+      wW, wH, -0.02, 1, 1, 0, 0, 1, 1, 1,
+      0, wH, -0.02, 0, 1, 0, 0, 1, 1, 1,
+    ]);
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+    return { tex, vbo, overviewCanvas: gc };
+  }
+
+  function prepareTrasaVectorLayers(mData) {
+    if (!mData || !mData.anchors) return;
+    clearSectorCache();
+    landuseWithBBox = (mData.vectorLanduse || []).map((a) => ({
+      ...a,
+      bbox: getPtsBBox(a.pts, 4),
+    }));
+    roadsWithBBox = (mData.vectorRoads || []).map((r) => ({
+      ...r,
+      bbox: getPtsBBox(r.pts, r.w + 4),
+    }));
+    tramsWithBBox = (mData.vectorTrams || []).map((t) => ({
+      ...t,
+      bbox: getPtsBBox(t.pts, 4),
+    }));
+    bldgsWithBBox = (mData.vectorBuildings || []).map((b) => ({
+      ...b,
+      bbox: getPtsBBox(b.rings[0] || [], 6),
+    }));
+    trasaAnchors = Object.values(mData.anchors);
+    trasaRoutePts = mData.routePts || [];
+    trasaCorrRad = mData.corridorRadiusUnits || 25;
+
+    if (globalOverview) {
+      gl.deleteTexture(globalOverview.tex);
+      gl.deleteBuffer(globalOverview.vbo);
+    }
+    globalOverview = buildGlobalOverview(mData);
+
+    // Pre-bake starting 1x1 km sector at Opensite (Tuczno)
+    const sx = Math.floor(mData.anchors.opensite.x / SECTOR_UNITS);
+    const sy = Math.floor(mData.anchors.opensite.y / SECTOR_UNITS);
+    getOrBakeSector(sx, sy);
+  }
+
+  // --- 2B. Build Smooth High-Res Ground Texture (4096 x 4096) for Map 1 (Naramowicka 47) ---
+  const GROUND_TEX_SIZE = 4096;
+
+  let currentGroundCanvas = null;
 
   function buildSmoothGroundTexture() {
     const gc = document.createElement('canvas');
+    if (usesSectorMap()) {
+      gc.width = 4;
+      gc.height = 4;
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, gc);
+      return tex;
+    }
+
     gc.width = GROUND_TEX_SIZE;
     gc.height = GROUND_TEX_SIZE;
     const ctx = gc.getContext('2d');
+
+    const SCALE_X = GROUND_TEX_SIZE / WORLD_W;
+    const SCALE_Y = GROUND_TEX_SIZE / WORLD_H;
+    const SCALE = (SCALE_X + SCALE_Y) * 0.5;
 
     const urbanPattern = createPattern(32, (c, s) => {
       c.fillStyle = '#33363d'; c.fillRect(0, 0, s, s);
@@ -133,6 +557,14 @@
       c.fillRect(6, 10, 3, 2); c.fillRect(22, 26, 3, 2);
     });
 
+    const forestPattern = createPattern(32, (c, s) => {
+      c.fillStyle = '#1e3318'; c.fillRect(0, 0, s, s);
+      c.fillStyle = '#152611';
+      c.fillRect(4, 4, 10, 10); c.fillRect(18, 18, 10, 10);
+      c.fillStyle = '#2b4a22';
+      c.fillRect(6, 5, 6, 6); c.fillRect(20, 19, 6, 6);
+    });
+
     const plazaPattern = createPattern(24, (c, s) => {
       c.fillStyle = '#5e564b'; c.fillRect(0, 0, s, s);
       c.fillStyle = '#4f483e';
@@ -140,19 +572,52 @@
       c.fillRect(0, 0, 2, 12); c.fillRect(12, 12, 2, 12);
     });
 
-    ctx.fillStyle = urbanPattern;
-    ctx.fillRect(0, 0, GROUND_TEX_SIZE, GROUND_TEX_SIZE);
+    if (usesSectorMap() && mapData.anchors) {
+      // Corridor & anchor circles (Trasa or Sehnde)
+      ctx.fillStyle = '#0e1015';
+      ctx.fillRect(0, 0, GROUND_TEX_SIZE, GROUND_TEX_SIZE);
+
+      const anchors = Object.values(mapData.anchors);
+      const routePts = mapData.routePts || [];
+      const corrRad = mapData.corridorRadiusUnits || 25;
+
+      ctx.fillStyle = grassPattern;
+      ctx.strokeStyle = grassPattern;
+      for (const a of anchors) {
+        const r = a.radiusUnits;
+        ctx.beginPath();
+        ctx.ellipse(a.x * SCALE_X, a.y * SCALE_Y, r * SCALE_X, r * SCALE_Y, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (routePts.length >= 2) {
+        ctx.beginPath();
+        ctx.moveTo(routePts[0][0] * SCALE_X, routePts[0][1] * SCALE_Y);
+        for (let i = 1; i < routePts.length; i++) {
+          ctx.lineTo(routePts[i][0] * SCALE_X, routePts[i][1] * SCALE_Y);
+        }
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = corrRad * 2 * SCALE;
+        ctx.stroke();
+      }
+    } else {
+      ctx.fillStyle = urbanPattern;
+      ctx.fillRect(0, 0, GROUND_TEX_SIZE, GROUND_TEX_SIZE);
+    }
 
     for (const area of (mapData.vectorLanduse || [])) {
       if (area.pts.length < 3) continue;
       ctx.beginPath();
-      ctx.moveTo(area.pts[0][0] * SCALE, area.pts[0][1] * SCALE);
+      ctx.moveTo(area.pts[0][0] * SCALE_X, area.pts[0][1] * SCALE_Y);
       for (let i = 1; i < area.pts.length; i++) {
-        ctx.lineTo(area.pts[i][0] * SCALE, area.pts[i][1] * SCALE);
+        ctx.lineTo(area.pts[i][0] * SCALE_X, area.pts[i][1] * SCALE_Y);
       }
       ctx.closePath();
 
-      if (area.kind === 'grass') {
+      if (area.kind === 'forest') {
+        ctx.fillStyle = forestPattern;
+        ctx.fill();
+      } else if (area.kind === 'grass') {
         ctx.fillStyle = grassPattern;
         ctx.fill();
         ctx.strokeStyle = '#22381c';
@@ -162,7 +627,7 @@
         ctx.fillStyle = '#1d4d75';
         ctx.fill();
         ctx.strokeStyle = '#3674a8';
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 2;
         ctx.stroke();
       } else if (area.kind === 'plaza') {
         ctx.fillStyle = plazaPattern;
@@ -173,11 +638,51 @@
       }
     }
 
+    // Clip landuse to exact 500m circles & 50m corridor when on Trasa map
+    if (usesSectorMap() && mapData.anchors) {
+      const anchors = Object.values(mapData.anchors);
+      const routePts = mapData.routePts || [];
+      const corrRad = mapData.corridorRadiusUnits || 25;
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = GROUND_TEX_SIZE;
+      maskCanvas.height = GROUND_TEX_SIZE;
+      const mctx = maskCanvas.getContext('2d');
+      mctx.fillStyle = '#ffffff';
+      mctx.strokeStyle = '#ffffff';
+      for (const a of anchors) {
+        const r = a.radiusUnits;
+        mctx.beginPath();
+        mctx.ellipse(a.x * SCALE_X, a.y * SCALE_Y, r * SCALE_X, r * SCALE_Y, 0, 0, Math.PI * 2);
+        mctx.fill();
+      }
+      if (routePts.length >= 2) {
+        mctx.beginPath();
+        mctx.moveTo(routePts[0][0] * SCALE_X, routePts[0][1] * SCALE_Y);
+        for (let i = 1; i < routePts.length; i++) {
+          mctx.lineTo(routePts[i][0] * SCALE_X, routePts[i][1] * SCALE_Y);
+        }
+        mctx.lineCap = 'round';
+        mctx.lineJoin = 'round';
+        mctx.lineWidth = corrRad * 2 * SCALE;
+        mctx.stroke();
+      }
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.drawImage(maskCanvas, 0, 0);
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-over';
+      ctx.fillStyle = '#0c0e13';
+      ctx.fillRect(0, 0, GROUND_TEX_SIZE, GROUND_TEX_SIZE);
+      ctx.restore();
+    }
+
     function strokeRoadPath(pts) {
       ctx.beginPath();
-      ctx.moveTo(pts[0][0] * SCALE, pts[0][1] * SCALE);
+      ctx.moveTo(pts[0][0] * SCALE_X, pts[0][1] * SCALE_Y);
       for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(pts[i][0] * SCALE, pts[i][1] * SCALE);
+        ctx.lineTo(pts[i][0] * SCALE_X, pts[i][1] * SCALE_Y);
       }
       ctx.stroke();
     }
@@ -189,31 +694,31 @@
     for (const r of roads) {
       if (r.kind !== 'footway') continue;
       ctx.strokeStyle = '#43464d';
-      ctx.lineWidth = (r.w + 0.45) * SCALE;
+      ctx.lineWidth = Math.max(1.0, (r.w + 0.45) * SCALE);
       strokeRoadPath(r.pts);
       ctx.strokeStyle = '#686b73';
-      ctx.lineWidth = r.w * SCALE;
+      ctx.lineWidth = Math.max(0.8, r.w * SCALE);
       strokeRoadPath(r.pts);
     }
 
     for (const r of roads) {
       if (r.kind === 'footway' || !r.hasSidewalk) continue;
       ctx.strokeStyle = '#1b1c21';
-      ctx.lineWidth = (r.w + 2.1) * SCALE;
+      ctx.lineWidth = Math.max(2.0, (r.w + 2.1) * SCALE);
       strokeRoadPath(r.pts);
     }
 
     for (const r of roads) {
       if (r.kind === 'footway' || !r.hasSidewalk) continue;
       ctx.strokeStyle = '#70737c';
-      ctx.lineWidth = (r.w + 1.7) * SCALE;
+      ctx.lineWidth = Math.max(1.8, (r.w + 1.7) * SCALE);
       strokeRoadPath(r.pts);
     }
 
     for (const r of roads) {
       if (r.kind === 'footway') continue;
-      ctx.strokeStyle = '#4e5159';
-      ctx.lineWidth = (r.w + 0.35) * SCALE;
+      ctx.strokeStyle = r.isMainRoute ? '#595240' : '#4e5159';
+      ctx.lineWidth = Math.max(1.6, (r.w + 0.35) * SCALE);
       strokeRoadPath(r.pts);
     }
 
@@ -224,9 +729,9 @@
       } else if (r.kind === 'plaza') {
         ctx.strokeStyle = '#5e564b';
       } else {
-        ctx.strokeStyle = '#25272e';
+        ctx.strokeStyle = r.isMainRoute ? '#22252c' : '#25272e';
       }
-      ctx.lineWidth = r.w * SCALE;
+      ctx.lineWidth = Math.max(1.3, r.w * SCALE);
       strokeRoadPath(r.pts);
     }
 
@@ -234,9 +739,9 @@
     ctx.lineCap = 'butt';
     ctx.setLineDash([2.2 * SCALE, 2.2 * SCALE]);
     for (const r of roads) {
-      if (!r.hasCenterLine) continue;
-      ctx.strokeStyle = r.prio >= 5 ? 'rgba(235, 200, 90, 0.65)' : 'rgba(210, 215, 225, 0.50)';
-      ctx.lineWidth = 0.22 * SCALE;
+      if (!r.hasCenterLine && !r.isMainRoute) continue;
+      ctx.strokeStyle = (r.prio >= 5 || r.isMainRoute) ? 'rgba(255, 215, 80, 0.80)' : 'rgba(210, 215, 225, 0.50)';
+      ctx.lineWidth = Math.max(0.6, 0.24 * SCALE);
       strokeRoadPath(r.pts);
     }
     ctx.restore();
@@ -244,22 +749,22 @@
     for (const tr of (mapData.vectorTrams || [])) {
       if (tr.pts.length < 2) continue;
       ctx.strokeStyle = '#383634';
-      ctx.lineWidth = 1.45 * SCALE;
+      ctx.lineWidth = Math.max(1.2, 1.45 * SCALE);
       strokeRoadPath(tr.pts);
 
       ctx.save();
       ctx.lineCap = 'butt';
       ctx.setLineDash([0.28 * SCALE, 0.55 * SCALE]);
       ctx.strokeStyle = '#544e46';
-      ctx.lineWidth = 1.2 * SCALE;
+      ctx.lineWidth = Math.max(1.0, 1.2 * SCALE);
       strokeRoadPath(tr.pts);
       ctx.restore();
 
       ctx.strokeStyle = '#9aa4b2';
-      ctx.lineWidth = 0.65 * SCALE;
+      ctx.lineWidth = Math.max(0.6, 0.65 * SCALE);
       strokeRoadPath(tr.pts);
       ctx.strokeStyle = '#383634';
-      ctx.lineWidth = 0.35 * SCALE;
+      ctx.lineWidth = Math.max(0.3, 0.35 * SCALE);
       strokeRoadPath(tr.pts);
     }
 
@@ -269,14 +774,16 @@
       for (const ring of b.rings) {
         if (ring.length < 3) continue;
         ctx.beginPath();
-        ctx.moveTo(ring[0][0] * SCALE + shOff, ring[0][1] * SCALE + shOff);
+        ctx.moveTo(ring[0][0] * SCALE_X + shOff, ring[0][1] * SCALE_Y + shOff);
         for (let i = 1; i < ring.length; i++) {
-          ctx.lineTo(ring[i][0] * SCALE + shOff, ring[i][1] * SCALE + shOff);
+          ctx.lineTo(ring[i][0] * SCALE_X + shOff, ring[i][1] * SCALE_Y + shOff);
         }
         ctx.closePath();
         ctx.fill();
       }
     }
+
+    currentGroundCanvas = gc;
 
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -405,7 +912,7 @@
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-  const groundTex = buildSmoothGroundTexture();
+  let groundTex = buildSmoothGroundTexture();
 
   // --- 4. Polygon Ear-Clipping Triangulator ---
   function pointInTriangle(px, py, ax, ay, bx, by, cx, cy) {
@@ -514,8 +1021,12 @@
       vec2 baseRelPx = (a_pos.xy - u_cam) * u_tilePx;
 
       // GTA 1 2.5D radial perspective displacement proportional to height Z
-      float hFactor = a_pos.z * 0.042 * u_perspK;
-      vec2 displacedPx = baseRelPx * (1.0 + hFactor);
+      // Capped radial 2.5D perspective displacement so buildings on screen edges never stretch into tall pillars!
+      float hFactor = max(0.0, a_pos.z) * 0.015 * u_perspK;
+      float rLen = length(baseRelPx);
+      float clampedLen = min(rLen, 280.0);
+      vec2 radialDir = (rLen > 0.001) ? (baseRelPx / rLen) : vec2(0.0, 0.0);
+      vec2 displacedPx = baseRelPx + radialDir * (clampedLen * hFactor);
 
       vec2 clipXY = displacedPx / (u_resolution * 0.5);
       float clipZ = 0.5 - (a_pos.z / 32.0);
@@ -652,9 +1163,9 @@
     // Ground plane (vertices 0..5)
     pushQuad(
       0, 0, 0, 0, 0,
-      GRID, 0, 0, 1, 0,
-      GRID, GRID, 0, 1, 1,
-      0, GRID, 0, 0, 1,
+      WORLD_W, 0, 0, 1, 0,
+      WORLD_W, WORLD_H, 0, 1, 1,
+      0, WORLD_H, 0, 0, 1,
       0, 0, 1, 1, 1
     );
 
@@ -743,7 +1254,7 @@
     return { vbo, bldgStartVertex, bldgVertexCount: totalVertices - bldgStartVertex };
   }
 
-  const mesh = buildVectorMesh();
+  let mesh = buildVectorMesh();
 
   // --- 7. Traffic & MPK Poznań Trams Simulation System (2.5D Oriented Boxes on GPU!) ---
   const dynamicVbo = gl.createBuffer();
@@ -819,24 +1330,6 @@
     return stitched;
   }
 
-  const tramTracks = buildStitchedTramTracks(mapData.vectorTrams || []);
-
-  // Spawn MPK Poznań Moderus Gamma / Solaris Tramino articulated 3-section trams!
-  const trams = [];
-  tramTracks.forEach((track, idx) => {
-    const count = Math.max(1, Math.floor(track.total / 95));
-    for (let i = 0; i < count; i++) {
-      trams.push({
-        track,
-        dist: ((i + 0.3) / count) * track.total,
-        dir: (idx + i) % 2 === 0 ? 1 : -1,
-        speed: 8.5 + (i % 2) * 1.2, // ~17-20 m/s in grid units (35-40 km/h)
-        lineNumber: (idx + i) % 2 === 0 ? '3' : '10', // Poznań tram lines 3 & 10 on Naramowicka/Wilczak!
-      });
-    }
-  });
-
-  // Spawn GTA 1 Retro Cars on major & residential streets (Naramowicka, Serbska, Al. Solidarności, Murawa...)
   const CAR_PALETTE = [
     [0.92, 0.22, 0.18], // Classic GTA Red sports
     [0.20, 0.55, 0.95], // Electric Blue
@@ -847,37 +1340,87 @@
     [0.55, 0.60, 0.68], // Silver metallic
   ];
 
-  const carRoads = (mapData.vectorRoads || [])
-    .filter((r) => r.kind === 'asphalt' && r.prio >= 2)
-    .map((r) => ({
-      metric: buildPathMetric(r.pts),
-      w: r.w,
-      oneway: r.oneway,
-      prio: r.prio,
-    }))
-    .filter((r) => r.metric.total >= 18);
+  let tramTracks = [];
+  let trams = [];
+  let carRoads = [];
+  let cars = [];
+  let mainRouteMetric = null;
 
-  const cars = [];
-  for (let i = 0; i < carRoads.length; i++) {
-    const road = carRoads[i];
-    const density = road.prio >= 4 ? 42 : 70;
-    const numCars = Math.floor(road.metric.total / density);
-    for (let c = 0; c < numCars && cars.length < 130; c++) {
-      const dir = road.oneway ? 1 : (c % 2 === 0 ? 1 : -1);
-      const color = CAR_PALETTE[(i * 3 + c * 7) % CAR_PALETTE.length];
-      cars.push({
-        road,
-        dist: ((c + 0.25) / Math.max(1, numCars)) * road.metric.total,
-        dir,
-        speed: (road.prio >= 4 ? 10.5 : 7.0) + ((i + c) % 5) * 0.9,
-        color,
-        // 2m unit dimensions: length ~2.2 units (4.4m), width ~1.05 units (2.1m), height 0.52 floors
-        length: 2.2,
-        width: 1.05,
-        height: 0.52,
-      });
+  function rebuildTrafficAndTrams() {
+    tramTracks = buildStitchedTramTracks(mapData.vectorTrams || []);
+    trams = [];
+    tramTracks.forEach((track, idx) => {
+      const count = Math.max(1, Math.floor(track.total / 95));
+      for (let i = 0; i < count; i++) {
+        trams.push({
+          track,
+          dist: ((i + 0.3) / count) * track.total,
+          dir: (idx + i) % 2 === 0 ? 1 : -1,
+          speed: 8.5 + (i % 2) * 1.2,
+          lineNumber: (idx + i) % 2 === 0 ? '3' : '10',
+        });
+      }
+    });
+
+    mainRouteMetric = (mapData.routePts && mapData.routePts.length >= 2)
+      ? buildPathMetric(mapData.routePts)
+      : null;
+
+    carRoads = (mapData.vectorRoads || [])
+      .filter((r) => r.kind === 'asphalt' && (r.prio >= 2 || r.isMainRoute))
+      .map((r) => ({
+        metric: buildPathMetric(r.pts),
+        w: r.w,
+        oneway: r.oneway,
+        prio: r.prio,
+        isMainRoute: !!r.isMainRoute,
+      }))
+      .filter((r) => r.metric.total >= 18);
+
+    cars = [];
+    // If on Trasa map, spawn 120 highway cars along the main 21.8 km route + local cars
+    if (activeMapKey === 'trasa' && mainRouteMetric) {
+      const mainRoadObj = { metric: mainRouteMetric, w: 4.5, oneway: false, prio: 6, isMainRoute: true };
+      const numHighway = 120;
+      for (let c = 0; c < numHighway; c++) {
+        const dir = c % 2 === 0 ? 1 : -1;
+        const color = CAR_PALETTE[c % CAR_PALETTE.length];
+        cars.push({
+          road: mainRoadObj,
+          dist: (c / numHighway) * mainRouteMetric.total,
+          dir,
+          speed: 12.0 + (c % 5) * 1.5,
+          color,
+          length: 2.2,
+          width: 1.05,
+          height: 0.52,
+        });
+      }
+    }
+
+    for (let i = 0; i < carRoads.length; i++) {
+      const road = carRoads[i];
+      if (road.isMainRoute) continue;
+      const density = road.prio >= 4 ? 42 : 75;
+      const numCars = Math.floor(road.metric.total / density);
+      for (let c = 0; c < numCars && cars.length < 180; c++) {
+        const dir = road.oneway ? 1 : (c % 2 === 0 ? 1 : -1);
+        const color = CAR_PALETTE[(i * 3 + c * 7) % CAR_PALETTE.length];
+        cars.push({
+          road,
+          dist: ((c + 0.25) / Math.max(1, numCars)) * road.metric.total,
+          dir,
+          speed: (road.prio >= 4 ? 10.5 : 7.0) + ((i + c) % 5) * 0.9,
+          color,
+          length: 2.2,
+          width: 1.05,
+          height: 0.52,
+        });
+      }
     }
   }
+
+  rebuildTrafficAndTrams();
 
   // Helper to append a 2.5D Oriented Box (Roof + 4 Side Walls) into dynamicData buffer
   function writeOrientedBox3D(
@@ -988,65 +1531,67 @@
   function updateAndBuildTraffic(dt) {
     let ptr = 0;
 
-    // 1. Update & emit articulated 3-car MPK Poznań Trams
-    for (const tr of trams) {
-      tr.dist += tr.dir * tr.speed * dt;
-      if (tr.dist > tr.track.total - 6) {
-        tr.dist = tr.track.total - 6;
-        tr.dir = -1;
-      } else if (tr.dist < 6) {
-        tr.dist = 6;
-        tr.dir = 1;
+    if (typeof state === 'undefined' || state.showTraffic !== false) {
+      // 1. Update & emit articulated 3-car MPK Poznań Trams
+      for (const tr of trams) {
+        tr.dist += tr.dir * tr.speed * dt;
+        if (tr.dist > tr.track.total - 6) {
+          tr.dist = tr.track.total - 6;
+          tr.dir = -1;
+        } else if (tr.dist < 6) {
+          tr.dist = 6;
+          tr.dir = 1;
+        }
+
+        // 3 articulated wagons per tram (each ~4.2 units = 8.4m long, separated by 4.5 units)
+        for (let w = -1; w <= 1; w++) {
+          const dWagon = tr.dist + w * 4.5;
+          const sample = samplePath(tr.track, dWagon);
+          const tx = sample.tx * tr.dir;
+          const ty = sample.ty * tr.dir;
+
+          ptr = writeOrientedBox3D(
+            dynamicData, ptr,
+            sample.x, sample.y, 0.02, 1.05,
+            tx, ty, 2.05, 0.65,
+            7, 0, // Tram roof slot (7,0)
+            7, 1, // Tram wall slot (7,1)
+            1.0, 1.0, 1.0
+          );
+        }
       }
 
-      // 3 articulated wagons per tram (each ~4.2 units = 8.4m long, separated by 4.5 units)
-      for (let w = -1; w <= 1; w++) {
-        const dWagon = tr.dist + w * 4.5;
-        const sample = samplePath(tr.track, dWagon);
-        const tx = sample.tx * tr.dir;
-        const ty = sample.ty * tr.dir;
+      // 2. Update & emit GTA 1 Retro Cars
+      for (const c of cars) {
+        c.dist += c.dir * c.speed * dt;
+        if (c.dist > c.road.metric.total) {
+          c.dist -= c.road.metric.total;
+        } else if (c.dist < 0) {
+          c.dist += c.road.metric.total;
+        }
+
+        const sample = samplePath(c.road.metric, c.dist);
+        const tx = sample.tx * c.dir;
+        const ty = sample.ty * c.dir;
+        // Right-hand traffic lane offset
+        const rx = -ty;
+        const ry = tx;
+        const laneOffset = c.road.oneway ? 0 : Math.min(1.1, c.road.w * 0.24);
+        const cx = sample.x + rx * laneOffset;
+        const cy = sample.y + ry * laneOffset;
 
         ptr = writeOrientedBox3D(
           dynamicData, ptr,
-          sample.x, sample.y, 0.02, 1.05,
-          tx, ty, 2.05, 0.65,
-          7, 0, // Tram roof slot (7,0)
-          7, 1, // Tram wall slot (7,1)
-          1.0, 1.0, 1.0
+          cx, cy, 0.02, c.height,
+          tx, ty, c.length * 0.5, c.width * 0.5,
+          7, 2, // Car roof slot (7,2)
+          7, 3, // Car wall slot (7,3)
+          c.color[0], c.color[1], c.color[2]
         );
       }
     }
 
-    // 2. Update & emit GTA 1 Retro Cars
-    for (const c of cars) {
-      c.dist += c.dir * c.speed * dt;
-      if (c.dist > c.road.metric.total) {
-        c.dist -= c.road.metric.total;
-      } else if (c.dist < 0) {
-        c.dist += c.road.metric.total;
-      }
-
-      const sample = samplePath(c.road.metric, c.dist);
-      const tx = sample.tx * c.dir;
-      const ty = sample.ty * c.dir;
-      // Right-hand traffic lane offset
-      const rx = -ty;
-      const ry = tx;
-      const laneOffset = c.road.oneway ? 0 : Math.min(1.1, c.road.w * 0.24);
-      const cx = sample.x + rx * laneOffset;
-      const cy = sample.y + ry * laneOffset;
-
-      ptr = writeOrientedBox3D(
-        dynamicData, ptr,
-        cx, cy, 0.02, c.height,
-        tx, ty, c.length * 0.5, c.width * 0.5,
-        7, 2, // Car roof slot (7,2)
-        7, 3, // Car wall slot (7,3)
-        c.color[0], c.color[1], c.color[2]
-      );
-    }
-
-    // 3. Emit Player Vehicle 2.5D Oriented Box (+ Police/Taxi Roof Lightbar!)
+      // 3. Emit Player Vehicle 2.5D Oriented Box (+ Police/Taxi Roof Lightbar!)
     if (typeof player !== 'undefined') {
       const spec = CAR_SPECS[player.carIdx];
       const tx = Math.cos(player.angle);
@@ -1091,6 +1636,21 @@
           1.0, 0.88, 0.20
         );
       }
+
+      // 4. If player is on foot ("ludzik"), emit a 2.5D torso/head block so he has real depth against buildings!
+      if (player.mode === 'foot') {
+        const ptx = Math.cos(player.pedAngle);
+        const pty = Math.sin(player.pedAngle);
+        const bobZ = Math.abs(Math.sin(player.walkCycle)) * 0.04;
+        // Torso (blue retro jacket)
+        ptr = writeOrientedBox3D(
+          dynamicData, ptr,
+          player.pedX, player.pedY, 0.04 + bobZ, 0.36 + bobZ,
+          ptx, pty, 0.22, 0.28,
+          7, 3, 7, 3,
+          0.18, 0.52, 0.95
+        );
+      }
     }
 
     const vertCount = ptr / 10;
@@ -1120,14 +1680,64 @@
 
   function buildMinimapBase() {
     const mctx = minimapBase.getContext('2d');
+    const mw = minimapBase.width;
+    const mh = minimapBase.height;
+    mctx.clearRect(0, 0, mw, mh);
+
+    if (usesSectorMap()) {
+      // Exact crisp vector minimap from trasa-app.js!
+      const sx = mw / WORLD_W;
+      const sy = mh / WORLD_H;
+
+      mctx.fillStyle = '#0c0e13';
+      mctx.fillRect(0, 0, mw, mh);
+
+      mctx.strokeStyle = '#294522';
+      mctx.lineWidth = Math.max(4, trasaCorrRad * 2 * sx);
+      mctx.lineCap = 'round';
+      mctx.lineJoin = 'round';
+      if (trasaRoutePts.length >= 2) {
+        mctx.beginPath();
+        mctx.moveTo(trasaRoutePts[0][0] * sx, trasaRoutePts[0][1] * sy);
+        for (let i = 1; i < trasaRoutePts.length; i++) {
+          mctx.lineTo(trasaRoutePts[i][0] * sx, trasaRoutePts[i][1] * sy);
+        }
+        mctx.stroke();
+      }
+
+      for (const a of trasaAnchors) {
+        mctx.fillStyle = '#294522';
+        mctx.beginPath();
+        mctx.arc(a.x * sx, a.y * sy, Math.max(5, a.radiusUnits * sx), 0, Math.PI * 2);
+        mctx.fill();
+        mctx.strokeStyle = '#59ff67';
+        mctx.lineWidth = 1.5;
+        mctx.stroke();
+      }
+
+      if (trasaRoutePts.length >= 2) {
+        mctx.strokeStyle = '#ffd15c';
+        mctx.lineWidth = 1.5;
+        mctx.beginPath();
+        mctx.moveTo(trasaRoutePts[0][0] * sx, trasaRoutePts[0][1] * sy);
+        for (let i = 1; i < trasaRoutePts.length; i++) {
+          mctx.lineTo(trasaRoutePts[i][0] * sx, trasaRoutePts[i][1] * sy);
+        }
+        mctx.stroke();
+      }
+      return;
+    }
+
+    if (!groundGrid || !heightGrid || !styleGrid) return;
+
     const img = mctx.createImageData(200, 200);
     const d = img.data;
 
     for (let my = 0; my < 200; my++) {
-      const gy = Math.floor((my / 200) * GRID);
+      const gy = Math.floor((my / 200) * WORLD_H);
       for (let mx = 0; mx < 200; mx++) {
-        const gx = Math.floor((mx / 200) * GRID);
-        const idx = gy * GRID + gx;
+        const gx = Math.floor((mx / 200) * WORLD_W);
+        const idx = gy * WORLD_W + gx;
         const h = heightGrid[idx];
         const g = groundGrid[idx];
         const st = styleGrid[idx];
@@ -1159,76 +1769,147 @@
   buildMinimapBase();
 
   // --- 8.5. Player Vehicle & GTA 1 Arcade Drift Physics Engine ---
+  // True physical longitudinal dynamics for a ~200 HP, 1500 kg (1.5t) car in 1 unit = 2 meters world scale:
+  //   F_drive = min(F_tire_traction_limit, (P_wheel_watts * powerBand(RPM)) / v_m_s)
+  //   F_resist = 0.5 * rho * CdA * v_m_s^2 + m * g * C_rr
+  // Gives real-world benchmark times:
+  //   0 - 60 km/h:  ~3.6 s (tire-traction & clutch limited on 1st gear, no rocket launch!)
+  //   0 - 100 km/h: ~7.1 s
+  //   0 - 150 km/h: ~14.6 s (strong 3rd/4th gear pull!)
+  //   0 - 180 km/h: ~22.5 s
+  //   Top speed:    ~212 km/h (aerodynamic drag equilibrium)
+  const GEARBOXES = {
+    manual6: {
+      kind: 'auto',
+      shiftUp: 0.22,
+      shiftDown: 0.16,
+      ratios: [
+        { minKmh: 0,   upshiftKmh: 42,  downshiftKmh: 0,   maxGearKmh: 48,  engineBrakeMul: 1.6 },
+        { minKmh: 18,  upshiftKmh: 72,  downshiftKmh: 22,  maxGearKmh: 80,  engineBrakeMul: 1.35 },
+        { minKmh: 42,  upshiftKmh: 108, downshiftKmh: 48,  maxGearKmh: 118, engineBrakeMul: 1.1 },
+        { minKmh: 72,  upshiftKmh: 142, downshiftKmh: 78,  maxGearKmh: 152, engineBrakeMul: 0.85 },
+        { minKmh: 108, upshiftKmh: 168, downshiftKmh: 112, maxGearKmh: 178, engineBrakeMul: 0.65 },
+        { minKmh: 138, upshiftKmh: 999, downshiftKmh: 142, maxGearKmh: 198, engineBrakeMul: 0.5 },
+      ],
+    },
+    dsg7: {
+      kind: 'auto',
+      shiftUp: 0.07,
+      shiftDown: 0.05,
+      ratios: [
+        { minKmh: 0,   upshiftKmh: 36,  downshiftKmh: 0,   maxGearKmh: 42,  engineBrakeMul: 1.4 },
+        { minKmh: 16,  upshiftKmh: 58,  downshiftKmh: 24,  maxGearKmh: 66,  engineBrakeMul: 1.2 },
+        { minKmh: 36,  upshiftKmh: 86,  downshiftKmh: 44,  maxGearKmh: 96,  engineBrakeMul: 1.0 },
+        { minKmh: 58,  upshiftKmh: 118, downshiftKmh: 70,  maxGearKmh: 128, engineBrakeMul: 0.85 },
+        { minKmh: 88,  upshiftKmh: 152, downshiftKmh: 100, maxGearKmh: 162, engineBrakeMul: 0.7 },
+        { minKmh: 122, upshiftKmh: 186, downshiftKmh: 134, maxGearKmh: 196, engineBrakeMul: 0.55 },
+        { minKmh: 158, upshiftKmh: 999, downshiftKmh: 168, maxGearKmh: 230, engineBrakeMul: 0.42 },
+      ],
+    },
+    auto8: {
+      kind: 'auto',
+      shiftUp: 0.13,
+      shiftDown: 0.08,
+      ratios: [
+        { minKmh: 0,   upshiftKmh: 32,  downshiftKmh: 0,   maxGearKmh: 38,  engineBrakeMul: 1.45 },
+        { minKmh: 14,  upshiftKmh: 52,  downshiftKmh: 20,  maxGearKmh: 60,  engineBrakeMul: 1.25 },
+        { minKmh: 32,  upshiftKmh: 76,  downshiftKmh: 38,  maxGearKmh: 86,  engineBrakeMul: 1.05 },
+        { minKmh: 52,  upshiftKmh: 104, downshiftKmh: 60,  maxGearKmh: 114, engineBrakeMul: 0.9 },
+        { minKmh: 78,  upshiftKmh: 134, downshiftKmh: 86,  maxGearKmh: 146, engineBrakeMul: 0.75 },
+        { minKmh: 108, upshiftKmh: 164, downshiftKmh: 116, maxGearKmh: 176, engineBrakeMul: 0.62 },
+        { minKmh: 140, upshiftKmh: 194, downshiftKmh: 148, maxGearKmh: 206, engineBrakeMul: 0.5 },
+        { minKmh: 172, upshiftKmh: 999, downshiftKmh: 176, maxGearKmh: 240, engineBrakeMul: 0.4 },
+      ],
+    },
+  };
+
   const CAR_SPECS = [
     {
-      name: 'Cossack GT (Sport)',
-      color: [0.96, 0.18, 0.16],
-      stripe: '#ffe066',
-      engineForce: 46.0,
-      reverseForce: 26.0,
-      brakeForce: 54.0,
-      maxSpeed: 29.0, // ~208 km/h in 2m units/s
-      turnRate: 3.45,
-      baseLatGrip: 9.2,
-      handbrakeLatGrip: 1.45,
-      oversteerTailKick: 2.1,
-      bounciness: 0.56,
-      length: 2.25,
-      width: 1.08,
-      height: 0.52,
+      name: 'Nissan Leaf 2013 (109 KM / 1.52t)',
+      color: [0.15, 0.72, 0.38],
+      stripe: '#e8f7ee',
+      drivetrain: 'ev',
+      massKg: 1521,
+      powerHp: 109,
+      maxLaunchG: 0.38,
+      cdA: 0.61,
+      reverseForce: 3.2,
+      brakeForce: 4.6,
+      maxSpeed: 20.0, // 144 km/h (ogranicznik Leaf ZE0)
+      turnRate: 2.55,
+      baseLatGrip: 7.2,
+      handbrakeLatGrip: 1.4,
+      oversteerTailKick: 1.2,
+      bounciness: 0.4,
+      length: 2.22,
+      width: 1.12,
+      height: 0.62,
     },
     {
-      name: 'Polonez Caro 1.6',
-      color: [0.16, 0.48, 0.85],
+      name: 'VW Touran 1.9 TDI 2008 (105 KM / 1.58t)',
+      color: [0.22, 0.34, 0.55],
       stripe: null,
-      engineForce: 34.0,
-      reverseForce: 21.0,
-      brakeForce: 42.0,
-      maxSpeed: 22.5, // ~162 km/h
-      turnRate: 3.15,
-      baseLatGrip: 6.4, // loves sliding tail naturally!
-      handbrakeLatGrip: 1.15,
-      oversteerTailKick: 2.55,
-      bounciness: 0.48,
-      length: 2.30,
-      width: 1.06,
-      height: 0.56,
-    },
-    {
-      name: 'Policja Poznań 997',
-      color: [0.15, 0.32, 0.78],
-      stripe: '#ffffff',
-      isPolice: true,
-      engineForce: 43.0,
-      reverseForce: 25.0,
-      brakeForce: 52.0,
-      maxSpeed: 27.5, // ~198 km/h
-      turnRate: 3.35,
-      baseLatGrip: 8.6,
-      handbrakeLatGrip: 1.35,
-      oversteerTailKick: 2.25,
-      bounciness: 0.60,
-      length: 2.32,
-      width: 1.10,
-      height: 0.56,
-    },
-    {
-      name: 'Taxi Winogrady',
-      color: [0.96, 0.78, 0.12],
-      stripe: '#1a1a1a',
-      isTaxi: true,
-      engineForce: 38.0,
-      reverseForce: 23.0,
-      brakeForce: 46.0,
-      maxSpeed: 24.5, // ~176 km/h
-      turnRate: 3.55,
-      baseLatGrip: 7.5,
+      drivetrain: 'diesel',
+      gearbox: 'manual6',
+      massKg: 1580,
+      powerHp: 105,
+      maxLaunchG: 0.34,
+      cdA: 0.78,
+      reverseForce: 3.0,
+      brakeForce: 4.3,
+      maxSpeed: 25.4, // ~183 km/h
+      turnRate: 2.45,
+      baseLatGrip: 6.4,
       handbrakeLatGrip: 1.25,
-      oversteerTailKick: 2.35,
-      bounciness: 0.52,
-      length: 2.26,
-      width: 1.08,
-      height: 0.55,
+      oversteerTailKick: 1.55,
+      bounciness: 0.42,
+      length: 2.20,
+      width: 1.15,
+      height: 0.72,
+    },
+    {
+      name: 'VW Golf Sportsvan 1.5 TSI (150 KM / 1.39t)',
+      color: [0.82, 0.16, 0.16],
+      stripe: '#f2f2f2',
+      drivetrain: 'petrol',
+      gearbox: 'dsg7',
+      massKg: 1390,
+      powerHp: 150,
+      maxLaunchG: 0.46,
+      cdA: 0.66,
+      reverseForce: 3.4,
+      brakeForce: 4.7,
+      maxSpeed: 29.2, // ~210 km/h
+      turnRate: 2.75,
+      baseLatGrip: 7.4,
+      handbrakeLatGrip: 1.3,
+      oversteerTailKick: 1.65,
+      bounciness: 0.44,
+      length: 2.17,
+      width: 1.13,
+      height: 0.64,
+    },
+    {
+      name: 'BMW X1 2.0d 2018 (190 KM / 1.66t)',
+      color: [0.12, 0.16, 0.22],
+      stripe: '#c5a46e',
+      drivetrain: 'diesel',
+      gearbox: 'auto8',
+      massKg: 1660,
+      powerHp: 190,
+      maxLaunchG: 0.46,
+      cdA: 0.82,
+      reverseForce: 3.5,
+      brakeForce: 4.8,
+      maxSpeed: 30.6, // ~220 km/h
+      turnRate: 2.6,
+      baseLatGrip: 7.6,
+      handbrakeLatGrip: 1.35,
+      oversteerTailKick: 1.45,
+      bounciness: 0.46,
+      length: 2.22,
+      width: 1.16,
+      height: 0.70,
     },
   ];
 
@@ -1308,19 +1989,22 @@
     },
   };
 
-  // Spatial Hash Grid (cell size = 10x10 units = 20x20m) for exact Vector Building Polygon Wall Collisions!
+  // Spatial Hash Map for exact Vector Building Polygon Wall Collisions (works on any world size!)
   const COLL_CELL = 10;
-  const COLL_COLS = Math.ceil(GRID / COLL_CELL);
-  const wallGrid = Array.from({ length: COLL_COLS * COLL_COLS }, () => []);
+  let wallBuckets = new Map();
+
+  function getWallBucket(cx, cy) {
+    return wallBuckets.get(`${cx},${cy}`) || [];
+  }
 
   function buildWallSpatialHash() {
+    wallBuckets = new Map();
     for (const b of (mapData.vectorBuildings || [])) {
       const floors = b.floors || 3;
       for (const ring of b.rings) {
         const n = ring.length;
         if (n < 3) continue;
 
-        // Compute ring signed area to orient wall normals strictly OUTWARD from building
         let area = 0;
         for (let i = 0; i < n; i++) {
           const j = (i + 1) % n;
@@ -1336,20 +2020,25 @@
           const len = Math.hypot(dx, dy);
           if (len < 0.05) continue;
 
-          // Outward unit normal
           const nx = (dy / len) * sign;
           const ny = (-dx / len) * sign;
 
           const seg = { x0, y0, x1, y1, nx, ny, len, floors };
 
-          const minCX = Math.max(0, Math.floor((Math.min(x0, x1) - 1.5) / COLL_CELL));
-          const maxCX = Math.min(COLL_COLS - 1, Math.floor((Math.max(x0, x1) + 1.5) / COLL_CELL));
-          const minCY = Math.max(0, Math.floor((Math.min(y0, y1) - 1.5) / COLL_CELL));
-          const maxCY = Math.min(COLL_COLS - 1, Math.floor((Math.max(y0, y1) + 1.5) / COLL_CELL));
+          const minCX = Math.floor((Math.min(x0, x1) - 1.5) / COLL_CELL);
+          const maxCX = Math.floor((Math.max(x0, x1) + 1.5) / COLL_CELL);
+          const minCY = Math.floor((Math.min(y0, y1) - 1.5) / COLL_CELL);
+          const maxCY = Math.floor((Math.max(y0, y1) + 1.5) / COLL_CELL);
 
           for (let cy = minCY; cy <= maxCY; cy++) {
             for (let cx = minCX; cx <= maxCX; cx++) {
-              wallGrid[cy * COLL_COLS + cx].push(seg);
+              const key = `${cx},${cy}`;
+              let arr = wallBuckets.get(key);
+              if (!arr) {
+                arr = [];
+                wallBuckets.set(key, arr);
+              }
+              arr.push(seg);
             }
           }
         }
@@ -1357,6 +2046,46 @@
     }
   }
   buildWallSpatialHash();
+
+  // Spatial Hash Map for Vector Roads (used on Trasa map where groundGrid is not baked)
+  const ROAD_CELL = 20;
+  let roadBuckets = new Map();
+
+  function buildRoadSpatialHash() {
+    roadBuckets = new Map();
+    for (const r of (mapData.vectorRoads || [])) {
+      const pts = r.pts;
+      if (!pts || pts.length < 2) continue;
+      const halfW = (r.w || 3.5) * 0.5;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [x0, y0] = pts[i];
+        const [x1, y1] = pts[i + 1];
+        const seg = {
+          x0, y0, x1, y1,
+          halfW,
+          hasSidewalk: !!r.hasSidewalk,
+          kind: r.kind,
+          isMainRoute: !!r.isMainRoute,
+        };
+        const minCX = Math.floor((Math.min(x0, x1) - halfW - 2) / ROAD_CELL);
+        const maxCX = Math.floor((Math.max(x0, x1) + halfW + 2) / ROAD_CELL);
+        const minCY = Math.floor((Math.min(y0, y1) - halfW - 2) / ROAD_CELL);
+        const maxCY = Math.floor((Math.max(y0, y1) + halfW + 2) / ROAD_CELL);
+        for (let cy = minCY; cy <= maxCY; cy++) {
+          for (let cx = minCX; cx <= maxCX; cx++) {
+            const key = `${cx},${cy}`;
+            let arr = roadBuckets.get(key);
+            if (!arr) {
+              arr = [];
+              roadBuckets.set(key, arr);
+            }
+            arr.push(seg);
+          }
+        }
+      }
+    }
+  }
+  buildRoadSpatialHash();
 
   // Helper to find closest drivable road spot near target (x, y) so car never spawns inside a building
   function findNearestRoadSpawn(targetX, targetY) {
@@ -1391,6 +2120,7 @@
   const initialSpawn = findNearestRoadSpawn(250, 250);
 
   const player = {
+    mode: 'car', // 'car' | 'foot'
     carIdx: 0,
     x: initialSpawn.x,
     y: initialSpawn.y,
@@ -1416,12 +2146,27 @@
     lastSurfaceType: GROUND.ROAD_ASPHALT,
     curbBumpTimer: 0,
     collisionFlash: 0,
+    // 5-speed transmission & RPM state
+    gear: 1,         // 1..5
+    shiftTimer: 0,   // >0 when clutch is disengaged during gear shift
+    rpmNorm: 0.15,   // 0..1 normalized engine RPM
+    // On-foot character ("ludzik") state
+    pedX: initialSpawn.x,
+    pedY: initialSpawn.y,
+    pedVx: 0,
+    pedVy: 0,
+    pedAngle: initialSpawn.angle,
+    walkCycle: 0,
+    shootCooldown: 0,
+    muzzleFlashTimer: 0,
+    stepSoundTimer: 0,
   };
 
-  // Tire skidmarks ring buffer & particle emitters (smoke, sparks, debris)
+  // Tire skidmarks ring buffer, bullets & particle emitters (smoke, sparks, shell casings)
   const MAX_SKIDS = 900;
   const skidMarks = [];
   const particles = [];
+  const bullets = [];
 
   function addSkidMark(x0, y0, x1, y1, color, width) {
     skidMarks.push({ x0, y0, x1, y1, color, width });
@@ -1435,6 +2180,7 @@
 
   function respawnPlayerAt(tx, ty) {
     const sp = findNearestRoadSpawn(tx, ty);
+    player.mode = 'car';
     player.x = sp.x;
     player.y = sp.y;
     player.angle = sp.angle;
@@ -1442,6 +2188,11 @@
     player.vy = 0;
     player.angularVel = 0;
     player.driftCombo = 0;
+    player.gear = 1;
+    player.shiftTimer = 0;
+    player.rpmNorm = 0.14;
+    player.pedX = sp.x;
+    player.pedY = sp.y;
   }
 
   // --- 8.8. GTA 1 Retro Web Audio Synthesizer (Engine RPM, Tire Screech, Grass Slide, Crashes, Horn & 997 Siren) ---
@@ -1580,27 +2331,45 @@
       if (!this.ready || !this.ctx) return;
       const now = this.ctx.currentTime;
 
-      // Calculate realistic GTA 1 multi-gear RPM curve
-      const kmh = player.speed * 7.2;
-      const gearThresholds = [0, 35, 70, 115, 155, 220];
-      let gearIdx = 0;
-      for (let i = 0; i < gearThresholds.length - 1; i++) {
-        if (kmh >= gearThresholds[i]) gearIdx = i;
+      if (player.mode === 'foot') {
+        // Quiet engine idle based on distance to parked car
+        const distToCar = Math.hypot(player.pedX - player.x, player.pedY - player.y);
+        const idleProx = Math.max(0, 1 - distToCar / 18);
+        const parkedEv = CAR_SPECS[player.carIdx].drivetrain === 'ev';
+        this.engOsc1.frequency.setTargetAtTime(38, now, 0.05);
+        this.engOsc2.frequency.setTargetAtTime(19, now, 0.05);
+        this.engGain.gain.setTargetAtTime(parkedEv ? 0 : 0.03 * idleProx, now, 0.05);
+        this.skidGain.gain.setTargetAtTime(0.0, now, 0.04);
+        this.sirenGain.gain.setTargetAtTime(0.0, now, 0.04);
+        return;
       }
-      const gMin = gearThresholds[gearIdx];
-      const gMax = gearThresholds[gearIdx + 1] || 220;
-      const gearRpmNorm = Math.max(0, Math.min(1, (kmh - gMin) / Math.max(10, gMax - gMin)));
 
-      // Different engine tone per car (Cossack GT higher sporty pitch, Polonez throatier low pitch)
-      const carPitchMul = [1.18, 0.88, 1.05, 0.96][player.carIdx] || 1.0;
-      const wheelspinBoost = (player.drifting && throttleInput) ? 24 : 0;
-      const baseFreq = (42 + gearRpmNorm * 95 + (kmh * 0.28) + throttleInput * 16 + wheelspinBoost) * carPitchMul;
+      const specNow = CAR_SPECS[player.carIdx];
+      const isEv = specNow.drivetrain === 'ev';
+      const isDiesel = specNow.drivetrain === 'diesel';
+      const isShifting = !isEv && player.shiftTimer > 0;
+      const rpm = player.rpmNorm || 0.14;
 
-      this.engOsc1.frequency.setTargetAtTime(baseFreq, now, 0.035);
-      this.engOsc2.frequency.setTargetAtTime(baseFreq * 0.5, now, 0.035);
-      this.engFilter.frequency.setTargetAtTime(190 + baseFreq * 3.8 + throttleInput * 220, now, 0.04);
-      const targetEngVol = 0.09 + Math.min(0.16, (player.speed / 25) * 0.10 + throttleInput * 0.06);
-      this.engGain.gain.setTargetAtTime(targetEngVol, now, 0.04);
+      if (isEv) {
+        this.engGain.gain.setTargetAtTime(0, now, 0.04);
+      } else {
+        const revCurve = 0.72 * rpm + 0.28 * (rpm * rpm);
+        const shiftDip = isShifting ? -22 : 0;
+        const loadBoost = isShifting ? 0 : throttleInput * (isDiesel ? 4 : 9);
+        const pitchMul = isDiesel ? 0.62 : 1.0;
+        const baseFreq = Math.max(28, (34 + revCurve * (isDiesel ? 78 : 124) + loadBoost + shiftDip) * pitchMul);
+        this.engOsc1.frequency.setTargetAtTime(baseFreq, now, 0.012);
+        this.engOsc2.frequency.setTargetAtTime(baseFreq * 0.5, now, 0.012);
+        this.engFilter.frequency.setTargetAtTime(
+          isShifting ? 160 : (isDiesel ? 140 + baseFreq * 2.2 : 180 + baseFreq * 4.2 + throttleInput * 260),
+          now,
+          0.015
+        );
+        const targetEngVol = isShifting
+          ? 0.045
+          : (0.08 + rpm * 0.12 + throttleInput * 0.06);
+        this.engGain.gain.setTargetAtTime(targetEngVol, now, 0.015);
+      }
 
       // Tire Screech (Asphalt/Sidewalk/Tram) vs Grass Dirt Rumble
       if (player.drifting && player.speed > 2.2) {
@@ -1619,6 +2388,12 @@
           this.skidFilter.Q.setTargetAtTime(5.5, now, 0.03);
           this.skidGain.gain.setTargetAtTime(slideIntensity * 0.22, now, 0.025);
         }
+      } else if (isEv && player.speed > 0.35) {
+        const roll = Math.min(1, player.speed / 16);
+        this.skidFilter.type = 'lowpass';
+        this.skidFilter.frequency.setTargetAtTime(160 + player.speed * 18, now, 0.08);
+        this.skidFilter.Q.setTargetAtTime(0.55, now, 0.08);
+        this.skidGain.gain.setTargetAtTime(0.01 + roll * 0.04, now, 0.08);
       } else {
         this.skidGain.gain.setTargetAtTime(0.0, now, 0.04);
       }
@@ -1631,6 +2406,25 @@
       } else {
         this.sirenGain.gain.setTargetAtTime(0.0, now, 0.03);
       }
+    },
+
+    playGearShift(isUpshift) {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      // Short mechanical gearbox clunk + exhaust blow-off puff on upshift
+      const osc = this.ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(isUpshift ? 135 : 175, now);
+      osc.frequency.exponentialRampToValueAtTime(48, now + 0.075);
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.14, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(now);
+      osc.stop(now + 0.085);
     },
 
     playCrash(impactSpeed) {
@@ -1720,6 +2514,105 @@
         osc.stop(now + 0.27);
       }
     },
+
+    playGunshot() {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+
+      // 1. Sharp pistol powder crack (high-energy filtered noise burst)
+      const noise = this.ctx.createBufferSource();
+      noise.buffer = this.noiseBuf;
+
+      const bandpass = this.ctx.createBiquadFilter();
+      bandpass.type = 'bandpass';
+      bandpass.frequency.setValueAtTime(1450, now);
+      bandpass.frequency.exponentialRampToValueAtTime(380, now + 0.11);
+      bandpass.Q.setValueAtTime(1.2, now);
+
+      const nGain = this.ctx.createGain();
+      nGain.gain.setValueAtTime(0.42, now);
+      nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+
+      noise.connect(bandpass);
+      bandpass.connect(nGain);
+      nGain.connect(this.masterGain);
+      noise.start(now);
+      noise.stop(now + 0.14);
+
+      // 2. Punchy 9mm barrel transients
+      const pop = this.ctx.createOscillator();
+      pop.type = 'sawtooth';
+      pop.frequency.setValueAtTime(290, now);
+      pop.frequency.exponentialRampToValueAtTime(48, now + 0.065);
+
+      const pGain = this.ctx.createGain();
+      pGain.gain.setValueAtTime(0.32, now);
+      pGain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+
+      pop.connect(pGain);
+      pGain.connect(this.masterGain);
+      pop.start(now);
+      pop.stop(now + 0.075);
+    },
+
+    playRicochet() {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sine';
+      const startF = 1900 + Math.random() * 900;
+      osc.frequency.setValueAtTime(startF, now);
+      osc.frequency.exponentialRampToValueAtTime(520, now + 0.09);
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.12, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.095);
+
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(now);
+      osc.stop(now + 0.10);
+    },
+
+    playDoorLatch() {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(180, now);
+      osc.frequency.setValueAtTime(110, now + 0.04);
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.16, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.10);
+
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(now);
+      osc.stop(now + 0.11);
+    },
+
+    playFootstep(isGrass) {
+      if (!this.ready || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      const noise = this.ctx.createBufferSource();
+      noise.buffer = this.noiseBuf;
+
+      const flt = this.ctx.createBiquadFilter();
+      flt.type = 'bandpass';
+      flt.frequency.setValueAtTime(isGrass ? 450 : 950, now);
+      flt.Q.setValueAtTime(2.5, now);
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.045, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
+
+      noise.connect(flt);
+      flt.connect(g);
+      g.connect(this.masterGain);
+      noise.start(now);
+      noise.stop(now + 0.05);
+    },
   };
 
   // --- 9. Camera & Controls ---
@@ -1729,6 +2622,7 @@
     zoom: 1.15,
     effectiveZoom: 1.15,
     followCar: true,
+    showTraffic: true,
     perspectiveStrength: 1.0,
     showLabels: true,
     showGrid: false,
@@ -1743,14 +2637,169 @@
     shakeY: 0,
   };
 
+  function setTrafficEnabled(enabled) {
+    state.showTraffic = !!enabled;
+    const chk = document.getElementById('toggle-traffic');
+    if (chk) chk.checked = state.showTraffic;
+    const btn = document.getElementById('btn-toggle-traffic');
+    if (btn) {
+      btn.textContent = state.showTraffic ? 'Ruch drogowy: WŁĄCZONY (T)' : 'Ruch drogowy: WYŁĄCZONY (T)';
+      btn.style.background = state.showTraffic ? '#3b2d10' : '#2a1818';
+      btn.style.color = state.showTraffic ? '#ffe07d' : '#ff8080';
+      btn.style.borderColor = state.showTraffic ? '#d99b26' : '#a83838';
+    }
+  }
+
+  // --- Enter / Exit Vehicle ("Wysiadanie i wsiadanie ludzikiem") & Pistol Firing ---
+  function toggleEnterExitVehicle() {
+    if (player.mode === 'car') {
+      // Exit vehicle: place ludzik next to the left driver's door (or right door if blocked)
+      const spec = CAR_SPECS[player.carIdx];
+      const tx = Math.cos(player.angle);
+      const ty = Math.sin(player.angle);
+      const rx = -ty;
+      const ry = tx;
+
+      // Driver door is on the left (-rx, -ry)
+      const doorDist = spec.width * 0.5 + 0.55;
+      let exitX = player.x - rx * doorDist;
+      let exitY = player.y - ry * doorDist;
+
+      // Check if left side is inside a building tile; if so, exit on right side
+      if (heightGrid && exitX >= 0 && exitX < WORLD_W && exitY >= 0 && exitY < WORLD_H) {
+        if (heightGrid[Math.floor(exitY) * WORLD_W + Math.floor(exitX)] > 0) {
+          exitX = player.x + rx * doorDist;
+          exitY = player.y + ry * doorDist;
+        }
+      }
+
+      player.mode = 'foot';
+      player.pedX = exitX;
+      player.pedY = exitY;
+      player.pedVx = player.vx * 0.35;
+      player.pedVy = player.vy * 0.35;
+      player.pedAngle = player.angle - Math.PI * 0.5;
+      player.handbrake = true;
+      sfx.playDoorLatch();
+    } else {
+      // On foot -> try to enter own car or commandeer nearest AI traffic car!
+      const distOwn = Math.hypot(player.pedX - player.x, player.pedY - player.y);
+      let bestAiCar = null;
+      let bestAiDist = 2.6;
+      let bestAiSample = null;
+
+      if (state.showTraffic) {
+        for (const c of cars) {
+          const s = samplePath(c.road.metric, c.dist);
+          const ctx = s.tx * c.dir;
+          const cty = s.ty * c.dir;
+          const crx = -cty, cry = ctx;
+          const laneOffset = c.road.oneway ? 0 : Math.min(1.1, c.road.w * 0.24);
+          const cx = s.x + crx * laneOffset;
+          const cy = s.y + cry * laneOffset;
+          const d = Math.hypot(player.pedX - cx, player.pedY - cy);
+          if (d < bestAiDist) {
+            bestAiDist = d;
+            bestAiCar = c;
+            bestAiSample = { cx, cy, angle: Math.atan2(cty, ctx) };
+          }
+        }
+      }
+
+      if (distOwn <= 2.8 && (!bestAiCar || distOwn <= bestAiDist)) {
+        player.mode = 'car';
+        player.handbrake = false;
+        sfx.playDoorLatch();
+      } else if (bestAiCar && bestAiSample) {
+        // GTA 1 Carjacking! Take over the AI car!
+        player.mode = 'car';
+        player.x = bestAiSample.cx;
+        player.y = bestAiSample.cy;
+        player.angle = bestAiSample.angle;
+        player.vx = 0;
+        player.vy = 0;
+        player.angularVel = 0;
+        player.damage = 0;
+        // Move the hijacked AI car far ahead along its route so it doesn't overlap
+        bestAiCar.dist = (bestAiCar.dist + 45) % bestAiCar.road.metric.total;
+        sfx.playDoorLatch();
+      }
+    }
+  }
+
+  function firePistol() {
+    if (player.shootCooldown > 0) return;
+    player.shootCooldown = 0.16; // Semi-auto rapid fire rate
+    player.muzzleFlashTimer = 0.06;
+
+    const originX = player.mode === 'foot' ? player.pedX : player.x;
+    const originY = player.mode === 'foot' ? player.pedY : player.y;
+
+    // Aim toward mouse cursor if moved, otherwise along character/car facing angle
+    let aimAngle = player.mode === 'foot' ? player.pedAngle : player.angle;
+    if (state.mouseX > 0 && state.mouseY > 0) {
+      const tilePx = BASE_TILE_PX * state.effectiveZoom;
+      const worldMouseX = state.camX + (state.mouseX - canvas.width * 0.5) / tilePx;
+      const worldMouseY = state.camY + (state.mouseY - canvas.height * 0.5) / tilePx;
+      if (Math.hypot(worldMouseX - originX, worldMouseY - originY) > 0.25) {
+        aimAngle = Math.atan2(worldMouseY - originY, worldMouseX - originX);
+        if (player.mode === 'foot') player.pedAngle = aimAngle;
+      }
+    }
+
+    const dirX = Math.cos(aimAngle);
+    const dirY = Math.sin(aimAngle);
+    const rightX = -dirY;
+    const rightY = dirX;
+
+    // Gun barrel tip position (held in right hand slightly forward)
+    const muzzleX = originX + dirX * 0.45 + rightX * 0.14;
+    const muzzleY = originY + dirY * 0.45 + rightY * 0.14;
+
+    const bulletSpeed = 52.0; // ~104 m/s in 2m units/s
+    const spread = (Math.random() - 0.5) * 0.04;
+    const bAngle = aimAngle + spread;
+
+    bullets.push({
+      x: muzzleX,
+      y: muzzleY,
+      prevX: muzzleX,
+      prevY: muzzleY,
+      vx: Math.cos(bAngle) * bulletSpeed,
+      vy: Math.sin(bAngle) * bulletSpeed,
+      life: 0.65,
+    });
+
+    // Eject brass shell casing to the right + muzzle smoke puff
+    spawnParticle(
+      muzzleX, muzzleY,
+      rightX * (2.5 + Math.random() * 2) - dirX * 1.0,
+      rightY * (2.5 + Math.random() * 2) - dirY * 1.0,
+      2.2, [255, 215, 90], 0.32, 'spark'
+    );
+    spawnParticle(
+      muzzleX + dirX * 0.15, muzzleY + dirY * 0.15,
+      dirX * 3.5 + (Math.random() - 0.5) * 1.5,
+      dirY * 3.5 + (Math.random() - 0.5) * 1.5,
+      3.8, [235, 235, 240], 0.22, 'smoke'
+    );
+
+    state.shakePower = Math.max(state.shakePower, 0.16);
+    sfx.playGunshot();
+  }
+
   const keys = new Set();
   window.addEventListener('keydown', (e) => {
     sfx.init();
     const k = e.key.toLowerCase();
-    if (k === ' ') e.preventDefault();
+    if (k === ' ' || k === 'enter') e.preventDefault();
     keys.add(k);
 
-    if (k >= '1' && k <= '4') {
+    if ((k === 'f' || k === 'enter') && !e.repeat) {
+      toggleEnterExitVehicle();
+    } else if ((k === 'control' || (k === ' ' && player.mode === 'foot')) && !e.repeat) {
+      firePistol();
+    } else if (k >= '1' && k <= '4') {
       selectCar(Number(k) - 1);
       sfx.playCurbBump();
     } else if (k === 'r') {
@@ -1760,6 +2809,19 @@
       player.damage = 0;
     } else if (k === 'm') {
       sfx.toggleMute();
+    } else if (k === 't' && !e.repeat) {
+      setTrafficEnabled(!state.showTraffic);
+      sfx.playCurbBump();
+    } else if ((k === 'q' || k === 'e') && !e.repeat && player.mode !== 'foot') {
+      const box = GEARBOXES[CAR_SPECS[player.carIdx].gearbox];
+      if (box && box.kind === 'manual' && player.shiftTimer <= 0 && player.forwardSpeed > -0.5) {
+        const next = (player.gear || 1) + (k === 'q' ? 1 : -1);
+        if (next >= 1 && next <= box.ratios.length) {
+          player.gear = next;
+          player.shiftTimer = k === 'q' ? box.shiftUp : box.shiftDown;
+          sfx.playGearShift(k === 'q');
+        }
+      }
     } else if (k === 'h') {
       player.sirenActive = !player.sirenActive;
       sfx.playHorn();
@@ -1778,6 +2840,8 @@
 
   function selectCar(idx) {
     player.carIdx = Math.max(0, Math.min(CAR_SPECS.length - 1, idx));
+    player.gear = 1;
+    player.shiftTimer = 0;
     const btns = document.querySelectorAll('#car-selector button');
     btns.forEach((b, i) => b.classList.toggle('active', i === player.carIdx));
   }
@@ -1805,6 +2869,214 @@
     });
   }
 
+  const toggleTrafficEl = document.getElementById('toggle-traffic');
+  if (toggleTrafficEl) {
+    toggleTrafficEl.addEventListener('change', (e) => {
+      setTrafficEnabled(e.target.checked);
+    });
+  }
+
+  const btnToggleTrafficEl = document.getElementById('btn-toggle-traffic');
+  if (btnToggleTrafficEl) {
+    btnToggleTrafficEl.addEventListener('click', () => {
+      sfx.init();
+      setTrafficEnabled(!state.showTraffic);
+      sfx.playCurbBump();
+    });
+  }
+
+  // --- Map Switcher & Startup Modal Logic (Naramowicka 47 vs Trasa Opensite -> Karpia 21A) ---
+  const mapModalEl = document.getElementById('map-select-modal');
+  const btnOpenMapModal = document.getElementById('btn-open-map-modal');
+  const mapSwitcherQuickEl = document.getElementById('map-switcher-Quick');
+  const routeProgressGroupEl = document.getElementById('route-progress-group');
+  const routeProgressSliderEl = document.getElementById('route-progress');
+  const routePctEl = document.getElementById('route-pct');
+  const panelMapTitleEl = document.getElementById('panel-map-title');
+  const panelMapSubtitleEl = document.getElementById('panel-map-subtitle');
+  const minimapHeaderEl = document.querySelector('.minimap-header');
+
+  function populateQuickJumpsForMap() {
+    const qj = document.getElementById('quick-jumps');
+    if (!qj) return;
+    qj.innerHTML = '';
+
+    let jumps = [];
+    if (activeMapKey === 'sehnde' && mapData.anchors) {
+      const lm = mapData.landmarks || [];
+      jumps = lm.slice(0, 8).map((item) => ({ label: item.name, x: item.x, y: item.y }));
+      jumps.push({ label: 'Achardstraße 54', x: mapData.anchors.opensite.x, y: mapData.anchors.opensite.y });
+      jumps.push({ label: 'Widok całości', x: WORLD_W * 0.5, y: WORLD_H * 0.5, zoom: 0.35 });
+    } else if (activeMapKey === 'trasa' && mapData.anchors) {
+      const lm = mapData.landmarks || [];
+      jumps = [
+        { label: '1. Opensite (Tuczno)', x: mapData.anchors.opensite.x, y: mapData.anchors.opensite.y },
+        { label: '2. Wierzonka / Szosa', x: lm[3] ? lm[3].x : mapData.anchors.opensite.x, y: lm[3] ? lm[3].y : mapData.anchors.opensite.y },
+        { label: '3. Las Puszcza Zielonka', x: lm[4] ? lm[4].x : mapData.anchors.kicin.x, y: lm[4] ? lm[4].y : mapData.anchors.kicin.y },
+        { label: '4. Szkoła (Kicin 500m)', x: mapData.anchors.kicin.x, y: mapData.anchors.kicin.y },
+        { label: '5. Koziegłowy / Gdyńska', x: lm[5] ? lm[5].x : mapData.anchors.kicin.x, y: lm[5] ? lm[5].y : mapData.anchors.kicin.y },
+        { label: '6. Most Lecha (Warta)', x: lm[6] ? lm[6].x : mapData.anchors.karpia.x, y: lm[6] ? lm[6].y : mapData.anchors.karpia.y },
+        { label: '7. HQ Systemia (Karpia 21A)', x: mapData.anchors.karpia.x, y: mapData.anchors.karpia.y },
+        { label: 'Widok całej trasy', x: WORLD_W * 0.5, y: WORLD_H * 0.5, zoom: 0.11 },
+      ];
+    } else {
+      jumps = [
+        { label: 'Naramowicka 47', x: 250, y: 250 },
+        { label: 'Rondo Solidarności', x: 275, y: 200 },
+        { label: 'Os. Kosmonautów', x: 235, y: 160 },
+        { label: 'Os. Pod Lipami', x: 119, y: 288 },
+        { label: 'Wilczak / Serbska', x: 365, y: 255 },
+        { label: 'Miasto Wnętrz / Giga', x: 393, y: 195 },
+        { label: 'Ul. Murawa / Park', x: 190, y: 360 },
+      ];
+    }
+
+    for (const j of jumps) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.dataset.x = Math.round(j.x);
+      btn.dataset.y = Math.round(j.y);
+      if (j.zoom) btn.dataset.zoom = j.zoom;
+      btn.textContent = j.label;
+      qj.appendChild(btn);
+    }
+  }
+
+  function loadSelectedMap(mapKey) {
+    if (mapKey === 'trasa' && !TRASA_MAP) {
+      alert('Brak danych nowej trasy w data/trasa-opensite-karpia.js!');
+      return;
+    }
+    if (mapKey === 'sehnde' && !SEHNDE_MAP) {
+      alert('Brak danych mapy Sehnde w data/sehnde-achardstrasse54.js!');
+      return;
+    }
+    activeMapKey = mapKey === 'trasa' ? 'trasa' : (mapKey === 'sehnde' ? 'sehnde' : 'naramowicka');
+    mapData = activeMapKey === 'trasa' ? TRASA_MAP : (activeMapKey === 'sehnde' ? SEHNDE_MAP : NARA_MAP);
+
+    WORLD_W = mapData.meta.gridWidth || mapData.meta.worldWidth || 500;
+    WORLD_H = mapData.meta.gridHeight || mapData.meta.worldHeight || 500;
+    GRID = WORLD_W;
+
+    groundGrid = decodeUint8(mapData.groundBase64);
+    heightGrid = decodeUint8(mapData.heightBase64);
+    styleGrid = decodeUint8(mapData.styleBase64);
+
+    // Rebuild GPU Ground Texture & 2.5D Buildings VBO for the chosen map
+    if (groundTex) gl.deleteTexture(groundTex);
+    groundTex = buildSmoothGroundTexture();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, groundTex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bldgAtlasTex);
+
+    if (mesh && mesh.vbo) gl.deleteBuffer(mesh.vbo);
+    mesh = buildVectorMesh();
+
+    if (usesSectorMap()) {
+      prepareTrasaVectorLayers(mapData);
+    }
+
+    rebuildTrafficAndTrams();
+    buildWallSpatialHash();
+    buildRoadSpatialHash();
+    buildMinimapBase();
+    populateQuickJumpsForMap();
+
+    skidMarks.length = 0;
+    particles.length = 0;
+
+    if (activeMapKey === 'trasa' && mapData.anchors) {
+      respawnPlayerAt(mapData.anchors.opensite.x, mapData.anchors.opensite.y);
+      if (panelMapTitleEl) panelMapTitleEl.textContent = 'TRASA: OPENSITE → KARPIA';
+      if (panelMapSubtitleEl) panelMapSubtitleEl.textContent = 'Tuczno (500m) → Kicin SP (500m) → Karpia 21A (21.8 km)';
+      if (minimapHeaderEl) minimapHeaderEl.textContent = 'RADAR TRASY (21.8 KM) — KLIKNIJ BY SKOCZYĆ';
+      if (routeProgressGroupEl) routeProgressGroupEl.classList.remove('hidden');
+      if (routeProgressSliderEl) routeProgressSliderEl.value = 0;
+      if (routePctEl) routePctEl.textContent = '0%';
+    } else if (activeMapKey === 'sehnde' && mapData.anchors) {
+      respawnPlayerAt(mapData.anchors.opensite.x, mapData.anchors.opensite.y);
+      if (panelMapTitleEl) panelMapTitleEl.textContent = 'SEHNDE: ACHARDSTRAßE 54';
+      if (panelMapSubtitleEl) panelMapSubtitleEl.textContent = '31319 Sehnde, Niemcy • średnica 2 km';
+      if (minimapHeaderEl) minimapHeaderEl.textContent = 'RADAR SEHNDE (2 KM) — KLIKNIJ BY SKOCZYĆ';
+      if (routeProgressGroupEl) routeProgressGroupEl.classList.add('hidden');
+    } else {
+      respawnPlayerAt(250, 250);
+      if (panelMapTitleEl) panelMapTitleEl.textContent = 'GTA 1: NARAMOWICKA 47';
+      if (panelMapSubtitleEl) panelMapSubtitleEl.textContent = 'Winogrady • Fizyka jazdy 2.5D • Poślizgi • Odbicia';
+      if (minimapHeaderEl) minimapHeaderEl.textContent = 'RADAR (1×1 KM) — KLIKNIJ BY SKOCZYĆ';
+      if (routeProgressGroupEl) routeProgressGroupEl.classList.add('hidden');
+    }
+
+    state.camX = player.x;
+    state.camY = player.y;
+
+    // Highlight active buttons
+    if (mapSwitcherQuickEl) {
+      mapSwitcherQuickEl.querySelectorAll('button[data-switch-map]').forEach((b) => {
+        b.classList.toggle('active', b.dataset.switchMap === activeMapKey);
+      });
+    }
+    if (mapModalEl) {
+      mapModalEl.querySelectorAll('.map-card[data-select-map]').forEach((c) => {
+        c.classList.toggle('active', c.dataset.selectMap === activeMapKey);
+      });
+      mapModalEl.classList.add('hidden');
+    }
+  }
+
+  if (mapModalEl) {
+    mapModalEl.addEventListener('click', (e) => {
+      const card = e.target.closest('[data-select-map]');
+      if (!card) return;
+      sfx.init();
+      loadSelectedMap(card.dataset.selectMap);
+      sfx.playCurbBump();
+    });
+  }
+
+  if (btnOpenMapModal && mapModalEl) {
+    btnOpenMapModal.addEventListener('click', () => {
+      mapModalEl.classList.remove('hidden');
+    });
+  }
+
+  if (mapSwitcherQuickEl) {
+    mapSwitcherQuickEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-switch-map]');
+      if (!btn) return;
+      sfx.init();
+      loadSelectedMap(btn.dataset.switchMap);
+      sfx.playCurbBump();
+    });
+  }
+
+  if (routeProgressSliderEl) {
+    routeProgressSliderEl.addEventListener('input', (e) => {
+      if (!mainRouteMetric) return;
+      const permille = Number(e.target.value);
+      const dist = (permille / 1000) * mainRouteMetric.total;
+      const pt = samplePath(mainRouteMetric, dist);
+      player.x = pt.x;
+      player.y = pt.y;
+      player.angle = Math.atan2(pt.ty, pt.tx);
+      player.vx = 0;
+      player.vy = 0;
+      player.angularVel = 0;
+      state.camX = player.x;
+      state.camY = player.y;
+      const km = ((permille / 1000) * (mapData.meta.routeDistanceKm || 21.8)).toFixed(1);
+      if (routePctEl) routePctEl.textContent = `${Math.round(permille / 10)}% (${km} km)`;
+    });
+  }
+
+  // Allow URL query ?map=trasa to jump directly to the new route map
+  if (window.location.search.includes('map=trasa')) {
+    loadSelectedMap('trasa');
+  } else if (window.location.search.includes('map=sehnde')) {
+    loadSelectedMap('sehnde');
+  }
+
   function resizeCanvases() {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -1818,6 +3090,12 @@
   resizeCanvases();
 
   canvas.addEventListener('mousedown', (e) => {
+    state.mouseX = e.clientX;
+    state.mouseY = e.clientY;
+    if (e.button === 0 && player.mode === 'foot') {
+      firePistol();
+      return;
+    }
     state.dragging = true;
     state.dragLastX = e.clientX;
     state.dragLastY = e.clientY;
@@ -1834,8 +3112,8 @@
       const tilePx = BASE_TILE_PX * state.effectiveZoom;
       const dx = (e.clientX - state.dragLastX) / tilePx;
       const dy = (e.clientY - state.dragLastY) / tilePx;
-      state.camX = Math.max(10, Math.min(GRID - 10, state.camX - dx));
-      state.camY = Math.max(10, Math.min(GRID - 10, state.camY - dy));
+      state.camX = Math.max(10, Math.min(WORLD_W - 10, state.camX - dx));
+      state.camY = Math.max(10, Math.min(WORLD_H - 10, state.camY - dy));
       state.dragLastX = e.clientX;
       state.dragLastY = e.clientY;
     }
@@ -1892,6 +3170,24 @@
     if (!btn) return;
     const tx = Number(btn.dataset.x);
     const ty = Number(btn.dataset.y);
+    if (btn.dataset.zoom) {
+      state.followCar = false;
+      const toggleCamEl = document.getElementById('toggle-cam-follow');
+      if (toggleCamEl) toggleCamEl.checked = false;
+      state.camX = tx;
+      state.camY = ty;
+      state.zoom = Number(btn.dataset.zoom);
+      state.effectiveZoom = state.zoom;
+      const zoomVal = document.getElementById('zoom-val');
+      if (zoomVal) zoomVal.textContent = `${state.zoom.toFixed(2)}x`;
+      return;
+    }
+    if (!state.followCar && state.zoom < 0.4) {
+      state.followCar = true;
+      const toggleCamEl = document.getElementById('toggle-cam-follow');
+      if (toggleCamEl) toggleCamEl.checked = true;
+      state.zoom = 1.15;
+    }
     respawnPlayerAt(tx, ty);
     state.camX = player.x;
     state.camY = player.y;
@@ -1901,8 +3197,8 @@
     const rect = minimapCanvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) / rect.width;
     const my = (e.clientY - rect.top) / rect.height;
-    const tx = Math.max(10, Math.min(GRID - 10, mx * GRID));
-    const ty = Math.max(10, Math.min(GRID - 10, my * GRID));
+    const tx = Math.max(10, Math.min(WORLD_W - 10, mx * WORLD_W));
+    const ty = Math.max(10, Math.min(WORLD_H - 10, my * WORLD_H));
     respawnPlayerAt(tx, ty);
     state.camX = player.x;
     state.camY = player.y;
@@ -1910,20 +3206,60 @@
 
   // --- 9.5. Player Vehicle Physics & Vector Collision Step ---
   function sampleGroundAt(x, y) {
-    const gx = Math.max(0, Math.min(GRID - 1, Math.floor(x)));
-    const gy = Math.max(0, Math.min(GRID - 1, Math.floor(y)));
-    return groundGrid[gy * GRID + gx];
+    if (groundGrid && x >= 0 && x < WORLD_W && y >= 0 && y < WORLD_H) {
+      const gx = Math.floor(x);
+      const gy = Math.floor(y);
+      return groundGrid[gy * WORLD_W + gx];
+    }
+
+    // Vector surface lookup for Trasa Opensite -> Karpia 21A map
+    const cx = Math.floor(x / ROAD_CELL);
+    const cy = Math.floor(y / ROAD_CELL);
+    let bestSurface = GROUND.GRASS;
+
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const segs = roadBuckets.get(`${cx + dx},${cy + dy}`);
+        if (!segs) continue;
+        for (let i = 0; i < segs.length; i++) {
+          const s = segs[i];
+          const vx = s.x1 - s.x0;
+          const vy = s.y1 - s.y0;
+          const l2 = vx * vx + vy * vy;
+          const t = l2 > 1e-6 ? Math.max(0, Math.min(1, ((x - s.x0) * vx + (y - s.y0) * vy) / l2)) : 0;
+          const d = Math.hypot(x - (s.x0 + t * vx), y - (s.y0 + t * vy));
+          if (d <= s.halfW) {
+            if (s.kind === 'footway') {
+              if (bestSurface < GROUND.SIDEWALK) bestSurface = GROUND.SIDEWALK;
+            } else if (s.kind === 'cobble') {
+              if (bestSurface < GROUND.ROAD_COBBLE) bestSurface = GROUND.ROAD_COBBLE;
+            } else {
+              return GROUND.ROAD_ASPHALT;
+            }
+          } else if (s.hasSidewalk && d <= s.halfW + 1.1) {
+            if (bestSurface < GROUND.SIDEWALK) bestSurface = GROUND.SIDEWALK;
+          }
+        }
+      }
+    }
+    return bestSurface;
   }
 
   function updatePlayerPhysics(dt) {
     const spec = CAR_SPECS[player.carIdx];
+    const isFoot = player.mode === 'foot';
 
-    // Sample surface under vehicle center
-    const gType = sampleGroundAt(player.x, player.y);
+    if (player.shootCooldown > 0) player.shootCooldown = Math.max(0, player.shootCooldown - dt);
+    if (player.muzzleFlashTimer > 0) player.muzzleFlashTimer = Math.max(0, player.muzzleFlashTimer - dt);
+
+    // Sample surface under active player entity (ludzik or car)
+    const activeX = isFoot ? player.pedX : player.x;
+    const activeY = isFoot ? player.pedY : player.y;
+    const gType = sampleGroundAt(activeX, activeY);
     const surf = SURFACE_PHYSICS[gType] || SURFACE_PHYSICS[GROUND.URBAN_PAVED];
 
-    // Detect curb / offroad transition bump
-    if (gType !== player.lastSurfaceType) {
+    // Detect curb / offroad transition bump when driving
+    if (!isFoot && gType !== player.lastSurfaceType) {
       const wasRoad = player.lastSurfaceType >= GROUND.ROAD_ASPHALT;
       const isRoad = gType >= GROUND.ROAD_ASPHALT;
       if (wasRoad !== isRoad && player.speed > 4.0) {
@@ -1937,13 +3273,103 @@
     if (player.collisionFlash > 0) player.collisionFlash = Math.max(0, player.collisionFlash - dt);
     if (player.sirenActive || spec.isPolice) player.sirenPhase += dt;
 
-    // Input controls
-    const throttleInput = (keys.has('w') || keys.has('arrowup')) ? 1 : 0;
-    const reverseInput = (keys.has('s') || keys.has('arrowdown')) ? 1 : 0;
-    const leftInput = (keys.has('a') || keys.has('arrowleft')) ? 1 : 0;
-    const rightInput = (keys.has('d') || keys.has('arrowright')) ? 1 : 0;
+    // Input controls (when on foot, car inputs are zeroed so the parked car coasts to a stop)
+    const rawUp = (keys.has('w') || keys.has('arrowup')) ? 1 : 0;
+    const rawDown = (keys.has('s') || keys.has('arrowdown')) ? 1 : 0;
+    const rawLeft = (keys.has('a') || keys.has('arrowleft')) ? 1 : 0;
+    const rawRight = (keys.has('d') || keys.has('arrowright')) ? 1 : 0;
+
+    // --- ON-FOOT ("LUDZIK") MOVEMENT & BUILDING COLLISION ---
+    if (isFoot) {
+      const moveX = rawRight - rawLeft;
+      const moveY = rawDown - rawUp;
+      const moveLen = Math.hypot(moveX, moveY);
+      const pedMaxSpeed = (gType === GROUND.GRASS ? 4.4 : 5.4); // ~35-38 km/h arcade sprint
+
+      if (moveLen > 0) {
+        const nx = moveX / moveLen;
+        const ny = moveY / moveLen;
+        player.pedVx = nx * pedMaxSpeed;
+        player.pedVy = ny * pedMaxSpeed;
+        player.pedAngle = Math.atan2(ny, nx);
+        player.walkCycle += dt * 16.0;
+
+        player.stepSoundTimer -= dt;
+        if (player.stepSoundTimer <= 0) {
+          player.stepSoundTimer = 0.24;
+          sfx.playFootstep(gType === GROUND.GRASS);
+        }
+      } else {
+        player.pedVx *= Math.exp(-18.0 * dt);
+        player.pedVy *= Math.exp(-18.0 * dt);
+      }
+
+      const prevPedX = player.pedX;
+      const prevPedY = player.pedY;
+      player.pedX = Math.max(4, Math.min(WORLD_W - 4, player.pedX + player.pedVx * dt));
+      player.pedY = Math.max(4, Math.min(WORLD_H - 4, player.pedY + player.pedVy * dt));
+
+      // Collide ludzik circle (radius 0.34) with Vector Building Walls
+      const pedRadius = 0.34;
+      const pCellX = Math.floor(player.pedX / COLL_CELL);
+      const pCellY = Math.floor(player.pedY / COLL_CELL);
+
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const walls = getWallBucket(pCellX + dx, pCellY + dy);
+          for (let w = 0; w < walls.length; w++) {
+            const seg = walls[w];
+            const wx = seg.x1 - seg.x0;
+            const wy = seg.y1 - seg.y0;
+            const l2 = seg.len * seg.len;
+            const t = Math.max(0, Math.min(1, ((player.pedX - seg.x0) * wx + (player.pedY - seg.y0) * wy) / l2));
+            const closestX = seg.x0 + t * wx;
+            const closestY = seg.y0 + t * wy;
+            const distX = player.pedX - closestX;
+            const distY = player.pedY - closestY;
+            const dSq = distX * distX + distY * distY;
+            if (dSq < pedRadius * pedRadius && dSq > 1e-9) {
+              const d = Math.sqrt(dSq);
+              let nx = distX / d, ny = distY / d;
+              if (nx * seg.nx + ny * seg.ny < 0) { nx = seg.nx; ny = seg.ny; }
+              player.pedX += nx * (pedRadius - d + 0.01);
+              player.pedY += ny * (pedRadius - d + 0.01);
+            }
+          }
+        }
+      }
+
+      if (groundGrid && heightGrid) {
+        const pIdx = Math.floor(player.pedY) * WORLD_W + Math.floor(player.pedX);
+        if (groundGrid[pIdx] === GROUND.WATER || heightGrid[pIdx] > 0) {
+          player.pedX = prevPedX;
+          player.pedY = prevPedY;
+        }
+      }
+
+      // Also collide ludzik against parked player car so he walks around it
+      const dxCar = player.pedX - player.x;
+      const dyCar = player.pedY - player.y;
+      const minCarDist = 0.85;
+      const dCarSq = dxCar * dxCar + dyCar * dyCar;
+      if (dCarSq < minCarDist * minCarDist && dCarSq > 1e-6) {
+        const d = Math.sqrt(dCarSq);
+        player.pedX += (dxCar / d) * (minCarDist - d);
+        player.pedY += (dyCar / d) * (minCarDist - d);
+      }
+
+      // Allow holding spacebar or Ctrl for rapid pistol fire on foot
+      if (keys.has(' ') || keys.has('control')) {
+        firePistol();
+      }
+    }
+
+    const throttleInput = isFoot ? 0 : rawUp;
+    const reverseInput = isFoot ? 0 : rawDown;
+    const leftInput = isFoot ? 0 : rawLeft;
+    const rightInput = isFoot ? 0 : rawRight;
     const steerInput = rightInput - leftInput;
-    const handbrake = keys.has(' ');
+    const handbrake = isFoot ? true : keys.has(' ');
 
     player.handbrake = handbrake;
     player.steerAngle = steerInput * 0.58;
@@ -1963,24 +3389,93 @@
 
     const maxAllowedSpeed = spec.maxSpeed * surf.maxSpeedMul;
 
-    if (throttleInput > 0) {
+    const fwdKmh = Math.max(0, vFwd * 7.2);
+    let activeGearSpec = { engineBrakeMul: 0.35, minKmh: 0, maxGearKmh: 200 };
+
+    if (spec.drivetrain === 'ev') {
+      // Single-speed reduction gear: motor rpm tracks road speed, no clutch shifts.
+      player.gear = 1;
+      player.shiftTimer = 0;
+      const speedNorm = Math.min(1, Math.abs(vFwd) / Math.max(1, spec.maxSpeed));
+      player.rpmNorm = 0.06 + speedNorm * 0.94;
+    } else {
+      if (player.shiftTimer > 0) {
+        player.shiftTimer = Math.max(0, player.shiftTimer - dt);
+      }
+      const box = GEARBOXES[spec.gearbox] || GEARBOXES.auto8;
+      const curGearIdx = Math.max(0, Math.min(box.ratios.length - 1, (player.gear || 1) - 1));
+      const gSpec = box.ratios[curGearIdx];
+
+      if (vFwd < -0.5 && box.kind !== 'manual') {
+        player.gear = 1;
+      } else if (box.kind !== 'manual' && player.shiftTimer <= 0) {
+        if (curGearIdx < box.ratios.length - 1 && fwdKmh >= gSpec.upshiftKmh && throttleInput > 0) {
+          player.gear = curGearIdx + 2;
+          player.shiftTimer = box.shiftUp;
+          sfx.playGearShift(true);
+        } else if (curGearIdx > 0 && fwdKmh <= gSpec.downshiftKmh) {
+          player.gear = curGearIdx;
+          player.shiftTimer = box.shiftDown;
+          sfx.playGearShift(false);
+        }
+      }
+
+      activeGearSpec = box.ratios[Math.max(0, Math.min(box.ratios.length - 1, (player.gear || 1) - 1))];
       if (vFwd < -0.5) {
+        player.rpmNorm = Math.min(0.95, 0.18 + (Math.abs(vFwd) * 7.2) / 55);
+      } else {
+        const span = Math.max(12, activeGearSpec.maxGearKmh - activeGearSpec.minKmh);
+        let targetRpm = 0.14 + Math.max(0, (fwdKmh - activeGearSpec.minKmh) / span) * 0.86;
+        if (spec.drivetrain === 'diesel') targetRpm = 0.22 + targetRpm * 0.62;
+        if (player.drifting && throttleInput > 0) {
+          targetRpm = Math.min(1.0, targetRpm + 0.12);
+        }
+        if (player.shiftTimer > 0) targetRpm *= 0.65;
+        player.rpmNorm += (Math.min(1.0, targetRpm) - player.rpmNorm) * Math.min(1.0, 18.0 * dt);
+      }
+    }
+
+    const vMs = vFwd * 2.0; // Convert 2m units/s to real meters/second (m/s)
+    const massKg = spec.massKg || 1500;
+    const driveline = spec.drivetrain === 'ev' ? 0.92 : 0.85;
+    const wheelPowerWatts = (spec.powerHp || 200) * 735.5 * driveline;
+
+    if (throttleInput > 0) {
+      if (vFwd < -0.25) {
         // Braking while moving backwards
         vFwd = Math.min(0, vFwd + spec.brakeForce * surf.grip * dt);
         player.braking = true;
-      } else {
-        // Accelerate forward with arcade power curve
-        const accelFactor = Math.max(0.15, 1.0 - (vFwd / (maxAllowedSpeed * 1.15)) ** 2);
-        vFwd += spec.engineForce * surf.grip * accelFactor * dt;
+      } else if (player.shiftTimer <= 0 && vFwd < maxAllowedSpeed) {
+        // True physics power-to-weight & traction model:
+        // 1) Below ~35 km/h (9.5 m/s), acceleration is capped by tire traction & clutch slip (maxLaunchG ~ 0.50g)
+        //    so the car doesn't launch like a rocket from 0 to 100 km/h!
+        // 2) Above 35 km/h, wheel force follows F = P_wheel / v, giving strong, sustained pull from 100 to 180+ km/h!
+        let powerBand = spec.drivetrain === 'ev'
+          ? 0.97
+          : (spec.drivetrain === 'diesel'
+            ? 0.90
+            : (0.78 + 0.24 * Math.sin(player.rpmNorm * Math.PI * 0.92)));
+        const boxNow = GEARBOXES[spec.gearbox];
+        if (boxNow && boxNow.kind === 'manual') {
+          if (player.rpmNorm > 0.98) powerBand = 0;
+          else powerBand *= Math.min(1, 0.2 + player.rpmNorm * 1.15);
+        }
+        const maxTireForceN = massKg * 9.81 * (spec.maxLaunchG || 0.50) * surf.grip;
+        const vEffMs = Math.max(8.5, Math.abs(vMs));
+        const powerForceN = (wheelPowerWatts * powerBand * surf.grip) / vEffMs;
+        const driveForceN = Math.min(maxTireForceN, powerForceN);
+
+        const accelMs2 = driveForceN / massKg;
+        vFwd += (accelMs2 * 0.5) * dt; // 1 unit/s^2 = 2 m/s^2 -> divide m/s^2 by 2
       }
     } else if (reverseInput > 0) {
-      if (vFwd > 1.2) {
-        // Service brake while moving forward
+      if (vFwd > 0.6) {
+        // Service brake while moving forward (~9.6 m/s^2 on dry asphalt)
         vFwd = Math.max(0, vFwd - spec.brakeForce * surf.grip * dt);
         player.braking = true;
       } else {
-        // Reverse gear
-        vFwd = Math.max(-maxAllowedSpeed * 0.42, vFwd - spec.reverseForce * surf.grip * dt);
+        // Reverse gear (max ~42 km/h)
+        vFwd = Math.max(-5.8 * surf.maxSpeedMul, vFwd - spec.reverseForce * surf.grip * dt);
         player.reversing = true;
       }
     }
@@ -1988,19 +3483,29 @@
     // Handbrake slows longitudinal speed moderately while unlocking the rear axle for drift!
     if (handbrake) {
       player.braking = true;
-      const hbDecel = 14.5 * surf.grip * dt;
+      const hbDecel = 3.2 * surf.grip * dt;
       if (Math.abs(vFwd) <= hbDecel) vFwd = 0;
       else vFwd -= Math.sign(vFwd) * hbDecel;
     }
 
-    // Rolling resistance + aerodynamic drag (stronger on grass/parks & sidewalks)
-    const rollingDrag = surf.drag * 2.8 * dt;
-    if (!throttleInput && !reverseInput && Math.abs(vFwd) < rollingDrag) {
+    // True Aerodynamic Drag (F_aero = 0.5 * rho * CdA * v^2) + Rolling Resistance + Engine Braking:
+    // Unlike linear damping, quadratic aero drag is very small below 150 km/h (so 100->180 km/h pulls hard!)
+    // and naturally balances 200 HP around 210 km/h.
+    const curVMs = vFwd * 2.0;
+    const surfaceRollMul = surf.drag / 0.24; // 1.0 on asphalt, higher on grass/sidewalk
+    const aeroDragN = 0.5 * 1.225 * (spec.cdA || 0.62) * curVMs * Math.abs(curVMs);
+    const rollResistN = Math.sign(curVMs) * massKg * 9.81 * 0.013 * surfaceRollMul;
+    const engBrakeN = (!throttleInput && !reverseInput && Math.abs(curVMs) > 0.5)
+      ? Math.sign(curVMs) * massKg * 0.42 * (activeGearSpec.engineBrakeMul || 1.0)
+      : 0;
+
+    const totalResistUnitsPerS2 = ((aeroDragN + rollResistN + engBrakeN) / massKg) * 0.5;
+    const resistStep = totalResistUnitsPerS2 * dt;
+    if (!throttleInput && !reverseInput && Math.abs(vFwd) <= Math.abs(resistStep) + 0.02) {
       vFwd = 0;
     } else {
-      vFwd -= Math.sign(vFwd) * rollingDrag;
+      vFwd -= resistStep;
     }
-    vFwd *= Math.exp(-surf.drag * 0.45 * dt);
 
     // Steering angular velocity (GTA 1 style: responsive at medium speeds, slightly heavier at top speed, kicks tail on handbrake!)
     const absSpeed = Math.hypot(vFwd, vLat);
@@ -2065,9 +3570,9 @@
     // Keep within map boundaries
     const margin = 4.0;
     if (player.x < margin) { player.x = margin; player.vx = Math.abs(player.vx) * 0.6; }
-    if (player.x > GRID - margin) { player.x = GRID - margin; player.vx = -Math.abs(player.vx) * 0.6; }
+    if (player.x > WORLD_W - margin) { player.x = WORLD_W - margin; player.vx = -Math.abs(player.vx) * 0.6; }
     if (player.y < margin) { player.y = margin; player.vy = Math.abs(player.vy) * 0.6; }
-    if (player.y > GRID - margin) { player.y = GRID - margin; player.vy = -Math.abs(player.vy) * 0.6; }
+    if (player.y > WORLD_H - margin) { player.y = WORLD_H - margin; player.vy = -Math.abs(player.vy) * 0.6; }
 
     // --- Vector Building Polygon Collision & Elastic Bounce with Angular Impulse! ---
     // Represent car body with 3 overlapping collision spheres along its chassis (Front bumper, Center, Rear bumper)
@@ -2094,11 +3599,9 @@
 
         for (let dy = -1; dy <= 1; dy++) {
           const cy = cellY + dy;
-          if (cy < 0 || cy >= COLL_COLS) continue;
           for (let dx = -1; dx <= 1; dx++) {
             const cx = cellX + dx;
-            if (cx < 0 || cx >= COLL_COLS) continue;
-            const walls = wallGrid[cy * COLL_COLS + cx];
+            const walls = getWallBucket(cx, cy);
 
             for (let w = 0; w < walls.length; w++) {
               const seg = walls[w];
@@ -2165,52 +3668,56 @@
     }
 
     // Fallback check: if center ever enters a water tile or deep inside an un-hashed building tile, bounce out
-    const curIdx = Math.floor(player.y) * GRID + Math.floor(player.x);
-    if (groundGrid[curIdx] === GROUND.WATER || heightGrid[curIdx] > 0) {
-      player.x = prevX;
-      player.y = prevY;
-      player.vx *= -0.55;
-      player.vy *= -0.55;
-      player.angularVel += (Math.random() - 0.5) * 5.0;
-      hitOccurred = true;
-      maxImpactSpeed = Math.max(maxImpactSpeed, 5.0);
-      hitPointX = player.x;
-      hitPointY = player.y;
+    if (groundGrid && heightGrid) {
+      const curIdx = Math.floor(player.y) * WORLD_W + Math.floor(player.x);
+      if (groundGrid[curIdx] === GROUND.WATER || heightGrid[curIdx] > 0) {
+        player.x = prevX;
+        player.y = prevY;
+        player.vx *= -0.55;
+        player.vy *= -0.55;
+        player.angularVel += (Math.random() - 0.5) * 5.0;
+        hitOccurred = true;
+        maxImpactSpeed = Math.max(maxImpactSpeed, 5.0);
+        hitPointX = player.x;
+        hitPointY = player.y;
+      }
     }
 
     // Dynamic Traffic & Tram Collisions (Bounce off moving cars & MPK trams!)
-    for (const c of cars) {
-      const s = samplePath(c.road.metric, c.dist);
-      const ctx = s.tx * c.dir;
-      const cty = s.ty * c.dir;
-      const crx = -cty, cry = ctx;
-      const laneOffset = c.road.oneway ? 0 : Math.min(1.1, c.road.w * 0.24);
-      const cx = s.x + crx * laneOffset;
-      const cy = s.y + cry * laneOffset;
+    if (state.showTraffic) {
+      for (const c of cars) {
+        const s = samplePath(c.road.metric, c.dist);
+        const ctx = s.tx * c.dir;
+        const cty = s.ty * c.dir;
+        const crx = -cty, cry = ctx;
+        const laneOffset = c.road.oneway ? 0 : Math.min(1.1, c.road.w * 0.24);
+        const cx = s.x + crx * laneOffset;
+        const cy = s.y + cry * laneOffset;
 
-      const dx = player.x - cx;
-      const dy = player.y - cy;
-      const minDist = 1.35;
-      const dSq = dx * dx + dy * dy;
-      if (dSq < minDist * minDist && dSq > 0.001) {
-        const d = Math.sqrt(dSq);
-        const nx = dx / d, ny = dy / d;
-        player.x += nx * (minDist - d + 0.05);
-        player.y += ny * (minDist - d + 0.05);
-        const vn = player.vx * nx + player.vy * ny;
-        if (vn < 2.0) {
-          const boost = Math.max(4.0, -vn * 1.45);
-          player.vx += nx * boost;
-          player.vy += ny * boost;
-          player.angularVel += (Math.random() - 0.5) * 4.5;
-          // Push the AI car forward/backward along its road!
-          c.dist += (nx * ctx + ny * cty < 0 ? 1.4 : -1.4) * c.dir;
-          hitOccurred = true;
-          maxImpactSpeed = Math.max(maxImpactSpeed, boost);
-          hitPointX = (player.x + cx) * 0.5;
-          hitPointY = (player.y + cy) * 0.5;
-          hitNormalX = nx;
-          hitNormalY = ny;
+        const dx = player.x - cx;
+        const dy = player.y - cy;
+        const minDist = 1.35;
+        const dSq = dx * dx + dy * dy;
+        if (dSq < minDist * minDist && dSq > 0.001) {
+          const d = Math.sqrt(dSq);
+          const nx = dx / d, ny = dy / d;
+          player.x += nx * (minDist - d + 0.05);
+          player.y += ny * (minDist - d + 0.05);
+          const vn = player.vx * nx + player.vy * ny;
+          if (vn < 2.0) {
+            const boost = Math.max(4.0, -vn * 1.45);
+            player.vx += nx * boost;
+            player.vy += ny * boost;
+            player.angularVel += (Math.random() - 0.5) * 4.5;
+            // Push the AI car forward/backward along its road!
+            c.dist += (nx * ctx + ny * cty < 0 ? 1.4 : -1.4) * c.dir;
+            hitOccurred = true;
+            maxImpactSpeed = Math.max(maxImpactSpeed, boost);
+            hitPointX = (player.x + cx) * 0.5;
+            hitPointY = (player.y + cy) * 0.5;
+            hitNormalX = nx;
+            hitNormalY = ny;
+          }
         }
       }
     }
@@ -2305,6 +3812,84 @@
       }
     }
 
+    // Update pistol bullets & check collisions with Vector Building Walls & Traffic Cars
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i];
+      b.life -= dt;
+      if (b.life <= 0) {
+        bullets.splice(i, 1);
+        continue;
+      }
+      b.prevX = b.x;
+      b.prevY = b.y;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+
+      let bulletHit = false;
+      let hitX = b.x;
+      let hitY = b.y;
+
+      // 1. Check building walls in bullet's spatial cell
+      const bCellX = Math.floor(b.x / COLL_CELL);
+      const bCellY = Math.floor(b.y / COLL_CELL);
+      const walls = getWallBucket(bCellX, bCellY);
+      for (let w = 0; w < walls.length; w++) {
+        const seg = walls[w];
+        const wx = seg.x1 - seg.x0, wy = seg.y1 - seg.y0;
+        const l2 = seg.len * seg.len;
+        const t = Math.max(0, Math.min(1, ((b.x - seg.x0) * wx + (b.y - seg.y0) * wy) / l2));
+        const dSq = (b.x - (seg.x0 + t * wx)) ** 2 + (b.y - (seg.y0 + t * wy)) ** 2;
+        if (dSq < 0.20) {
+          bulletHit = true;
+          hitX = seg.x0 + t * wx;
+          hitY = seg.y0 + t * wy;
+          break;
+        }
+      }
+
+      if (!bulletHit && heightGrid && b.x >= 0 && b.x < WORLD_W && b.y >= 0 && b.y < WORLD_H) {
+        if (heightGrid[Math.floor(b.y) * WORLD_W + Math.floor(b.x)] > 0) {
+          bulletHit = true;
+        }
+      }
+
+      // 2. Check traffic cars hit by bullet
+      if (!bulletHit && state.showTraffic) {
+        for (const c of cars) {
+          const s = samplePath(c.road.metric, c.dist);
+          const ctx = s.tx * c.dir, cty = s.ty * c.dir;
+          const crx = -cty, cry = ctx;
+          const laneOffset = c.road.oneway ? 0 : Math.min(1.1, c.road.w * 0.24);
+          const cx = s.x + crx * laneOffset;
+          const cy = s.y + cry * laneOffset;
+          if ((b.x - cx) ** 2 + (b.y - cy) ** 2 < 0.85) {
+            bulletHit = true;
+            hitX = b.x;
+            hitY = b.y;
+            player.score += 50; // GTA 1 points for hitting traffic!
+            // Panic speed boost on hit AI car
+            c.speed = Math.min(22, c.speed + 2.5);
+            break;
+          }
+        }
+      }
+
+      if (bulletHit) {
+        sfx.playRicochet();
+        for (let s = 0; s < 7; s++) {
+          const ang = Math.random() * Math.PI * 2;
+          const spd = 3 + Math.random() * 8;
+          spawnParticle(
+            hitX, hitY,
+            Math.cos(ang) * spd, Math.sin(ang) * spd,
+            2.4, s % 2 === 0 ? [255, 230, 90] : [255, 120, 40],
+            0.16 + Math.random() * 0.14, 'spark'
+          );
+        }
+        bullets.splice(i, 1);
+      }
+    }
+
     // Update particles
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
@@ -2334,20 +3919,34 @@
     }
 
     if (state.followCar && !state.dragging) {
-      // Look ahead in direction of velocity so player sees upcoming intersections!
-      const lookAheadX = player.vx * 0.34;
-      const lookAheadY = player.vy * 0.34;
-      const targetCamX = Math.max(10, Math.min(GRID - 10, player.x + lookAheadX));
-      const targetCamY = Math.max(10, Math.min(GRID - 10, player.y + lookAheadY));
+      if (isFoot) {
+        const lookAheadX = player.pedVx * 0.22;
+        const lookAheadY = player.pedVy * 0.22;
+        const targetCamX = Math.max(10, Math.min(WORLD_W - 10, player.pedX + lookAheadX));
+        const targetCamY = Math.max(10, Math.min(WORLD_H - 10, player.pedY + lookAheadY));
+        const camFollowRate = Math.min(1.0, 9.5 * dt);
+        state.camX += (targetCamX - state.camX) * camFollowRate + state.shakeX;
+        state.camY += (targetCamY - state.camY) * camFollowRate + state.shakeY;
 
-      const camFollowRate = Math.min(1.0, 7.5 * dt);
-      state.camX += (targetCamX - state.camX) * camFollowRate + state.shakeX;
-      state.camY += (targetCamY - state.camY) * camFollowRate + state.shakeY;
+        // Slightly closer zoom on foot so the GTA 1 ludzik and pistol are crisp!
+        const targetZoom = state.zoom * 1.18;
+        state.effectiveZoom += (targetZoom - state.effectiveZoom) * Math.min(1.0, 5.0 * dt);
+      } else {
+        // Look ahead in direction of velocity so player sees upcoming intersections!
+        const lookAheadX = player.vx * 0.34;
+        const lookAheadY = player.vy * 0.34;
+        const targetCamX = Math.max(10, Math.min(WORLD_W - 10, player.x + lookAheadX));
+        const targetCamY = Math.max(10, Math.min(WORLD_H - 10, player.y + lookAheadY));
 
-      // Dynamic GTA 1 Speed Zoom-Out: zooms out up to 28% at top speed, zooms back in when stopped
-      const speedRatio = Math.min(1.0, player.speed / spec.maxSpeed);
-      const targetZoom = state.zoom * (1.0 - speedRatio * 0.28);
-      state.effectiveZoom += (targetZoom - state.effectiveZoom) * Math.min(1.0, 4.5 * dt);
+        const camFollowRate = Math.min(1.0, 7.5 * dt);
+        state.camX += (targetCamX - state.camX) * camFollowRate + state.shakeX;
+        state.camY += (targetCamY - state.camY) * camFollowRate + state.shakeY;
+
+        // Dynamic GTA 1 Speed Zoom-Out: zooms out up to 28% at top speed, zooms back in when stopped
+        const speedRatio = Math.min(1.0, player.speed / spec.maxSpeed);
+        const targetZoom = state.zoom * (1.0 - speedRatio * 0.28);
+        state.effectiveZoom += (targetZoom - state.effectiveZoom) * Math.min(1.0, 4.5 * dt);
+      }
     } else {
       state.effectiveZoom += (state.zoom - state.effectiveZoom) * Math.min(1.0, 8.0 * dt);
     }
@@ -2360,6 +3959,8 @@
   const hudScoreEl = document.getElementById('hud-score');
   const hudDriftBadgeEl = document.getElementById('hud-drift-badge');
   const hudSurfacePillEl = document.getElementById('hud-surface-pill');
+  const hudActionPromptEl = document.getElementById('hud-action-prompt');
+  const hudModeBadgeEl = document.getElementById('hud-mode-badge');
   const hudSpeedEl = document.getElementById('hud-speed');
   const hudGearEl = document.getElementById('hud-gear');
   const tileInspectorEl = document.getElementById('tile-inspector');
@@ -2376,25 +3977,45 @@
       fpsTimer = now;
     }
 
-    const cx = Math.floor(player.x);
-    const cy = Math.floor(player.y);
+    const isFoot = player.mode === 'foot';
+    const cx = Math.floor(isFoot ? player.pedX : player.x);
+    const cy = Math.floor(isFoot ? player.pedY : player.y);
     if (hudCoordsEl) hudCoordsEl.textContent = `X:${cx} Y:${cy}`;
 
     // Speedometer (1 unit/s = 2 m/s = 7.2 km/h)
-    const kmh = Math.round(player.speed * 7.2);
+    const curSpd = isFoot ? Math.hypot(player.pedVx, player.pedVy) : player.speed;
+    const kmh = Math.round(curSpd * 7.2);
     if (hudSpeedEl) hudSpeedEl.textContent = String(kmh);
+
+    if (hudModeBadgeEl) {
+      hudModeBadgeEl.textContent = isFoot ? 'PIESZO (PISTOLET)' : 'AUTO';
+      hudModeBadgeEl.style.color = isFoot ? '#59ff67' : '#ffd15c';
+    }
+
+    if (hudActionPromptEl) {
+      if (isFoot) {
+        const distOwn = Math.hypot(player.pedX - player.x, player.pedY - player.y);
+        if (distOwn <= 2.8) {
+          hudActionPromptEl.textContent = 'PIESZO • [LPM / CTRL / SPACJA] STRZAŁ Z PISTOLETU • [F / ENTER] WSIĄDŹ DO AUTA';
+          hudActionPromptEl.style.color = '#59ff67';
+        } else {
+          hudActionPromptEl.textContent = 'PIESZO • [LPM / CTRL / SPACJA] STRZAŁ Z PISTOLETU • PODEJDŹ DO AUTA I [F] BY WSIĄŚĆ';
+          hudActionPromptEl.style.color = '#ffe07d';
+        }
+      } else {
+        hudActionPromptEl.textContent = 'W POJEŹDZIE • [SPACJA] RĘCZNY (DRIFT) • [F / ENTER] WYSIĄDŹ LUDZIKIEM';
+        hudActionPromptEl.style.color = '#ffe07d';
+      }
+    }
 
     if (hudGearEl) {
       let gear = 'N';
-      if (player.reversing || player.forwardSpeed < -0.5) gear = 'R';
-      else if (kmh > 1) {
-        if (kmh < 35) gear = '1';
-        else if (kmh < 70) gear = '2';
-        else if (kmh < 115) gear = '3';
-        else if (kmh < 155) gear = '4';
-        else gear = '5';
-      }
+      if (isFoot) gear = '🔫';
+      else if (player.reversing || player.forwardSpeed < -0.5) gear = 'R';
+      else if (CAR_SPECS[player.carIdx].drivetrain === 'ev') gear = 'D';
+      else gear = String(player.gear || 1);
       hudGearEl.textContent = gear;
+      hudGearEl.style.borderColor = player.shiftTimer > 0 ? '#ff6644' : '#d99b26';
     }
 
     if (hudScoreEl) {
@@ -2420,8 +4041,8 @@
     const tilePx = BASE_TILE_PX * state.effectiveZoom;
     const hoverX = Math.floor(state.camX + (state.mouseX - canvas.width / 2) / tilePx);
     const hoverY = Math.floor(state.camY + (state.mouseY - canvas.height / 2) / tilePx);
-    if (hoverX >= 0 && hoverX < GRID && hoverY >= 0 && hoverY < GRID) {
-      const idx = hoverY * GRID + hoverX;
+    if (groundGrid && heightGrid && hoverX >= 0 && hoverX < WORLD_W && hoverY >= 0 && hoverY < WORLD_H) {
+      const idx = hoverY * WORLD_W + hoverX;
       const h = heightGrid[idx];
       if (h > 0) {
         const pal = BLDG_PALETTES[styleGrid[idx]] || BLDG_PALETTES[1];
@@ -2429,37 +4050,62 @@
       } else {
         tileInspectorEl.textContent = GROUND_NAMES[groundGrid[idx]] || 'Teren';
       }
-    }
-
-    let bestName = 'WINOGRADY';
-    let bestDistSq = 900;
-
-    const dCenter = (cx - 250) ** 2 + (cy - 250) ** 2;
-    if (dCenter < 900) {
-      bestName = 'UL. NARAMOWICKA 47';
-      bestDistSq = dCenter;
-    }
-
-    for (const lm of mapData.landmarks) {
-      const d2 = (cx - lm.x) ** 2 + (cy - lm.y) ** 2;
-      if (d2 < 320 && d2 < bestDistSq) {
-        bestDistSq = d2;
-        bestName = lm.name.toUpperCase();
+    } else if (usesSectorMap() && mapData.anchors) {
+      let zoneDesc = 'Korytarz szosy (pas 50m)';
+      for (const a of Object.values(mapData.anchors)) {
+        if (Math.hypot(cx - a.x, cy - a.y) <= a.radiusUnits) {
+          zoneDesc = `${a.name} (${a.radiusM}m)`;
+          break;
+        }
       }
+      tileInspectorEl.textContent = zoneDesc;
     }
 
-    if (bestName === 'WINOGRADY') {
-      for (const st of mapData.streets) {
-        const d2 = (cx - st.x) ** 2 + (cy - st.y) ** 2;
-        if (d2 < bestDistSq) {
-          bestDistSq = d2;
-          bestName = st.name.toUpperCase();
+    // Find exact road polyline we are currently driving on!
+    let currentRoadName = '';
+    let minRoadD2 = 144; // within 12 units (24m) of road centerline
+    for (const r of (mapData.vectorRoads || [])) {
+      if (!r.name || r.isMainRoute) continue;
+      const pts = r.pts;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const x1 = pts[i][0], y1 = pts[i][1];
+        const x2 = pts[i + 1][0], y2 = pts[i + 1][1];
+        const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
+        let t = l2 > 0 ? ((player.x - x1) * (x2 - x1) + (player.y - y1) * (y2 - y1)) / l2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        const d2 = (player.x - (x1 + t * (x2 - x1))) ** 2 + (player.y - (y1 + t * (y2 - y1))) ** 2;
+        if (d2 < minRoadD2) {
+          minRoadD2 = d2;
+          currentRoadName = r.name;
         }
       }
     }
 
+    if (!currentRoadName) {
+      let bestStD2 = 900;
+      for (const st of (mapData.streets || [])) {
+        const d2 = (cx - st.x) ** 2 + (cy - st.y) ** 2;
+        if (d2 < bestStD2) {
+          bestStD2 = d2;
+          currentRoadName = st.name;
+        }
+      }
+    }
+
+    let bestName = currentRoadName
+      ? (currentRoadName.toLowerCase().startsWith('ul') || currentRoadName.toLowerCase().startsWith('al') || currentRoadName.toLowerCase().startsWith('rondo') || currentRoadName.toLowerCase().startsWith('most') || currentRoadName.toLowerCase().startsWith('osiedle') || currentRoadName.toLowerCase().startsWith('plac')
+          ? currentRoadName.toUpperCase()
+          : `UL. ${currentRoadName.toUpperCase()}`)
+      : (activeMapKey === 'trasa' ? 'SZOSA: TUCZNO → KICIN → POZNAŃ' : (activeMapKey === 'sehnde' ? 'ACHARDSTRAßE 54' : 'WINOGRADY'));
+
     if (hudBannerEl.textContent !== bestName) {
       hudBannerEl.textContent = bestName;
+    }
+
+    if (hudSurfacePillEl && currentRoadName) {
+      const surf = SURFACE_PHYSICS[player.surfaceType] || SURFACE_PHYSICS[GROUND.URBAN_PAVED];
+      const gripPct = Math.round(surf.grip * (player.handbrake ? 35 : 100));
+      hudSurfacePillEl.textContent = `ULICA: ${currentRoadName.toUpperCase()} • ${surf.name} (${gripPct}%)`;
     }
   }
 
@@ -2469,6 +4115,7 @@
   function frame(now) {
     const dt = Math.min(0.04, (now - lastTime) / 1000);
     lastTime = now;
+    try {
 
     // Step player vehicle arcade drift physics & vector polygon collisions
     updatePlayerPhysics(dt);
@@ -2479,9 +4126,17 @@
     const centerY = h * 0.5;
     const tilePx = BASE_TILE_PX * state.effectiveZoom;
 
+    const halfCols = Math.ceil(w / tilePx / 2) + 8;
+    const halfRows = Math.ceil(h / tilePx / 2) + 8;
+    const minTileX = Math.max(0, Math.floor(state.camX - halfCols));
+    const maxTileX = Math.min(WORLD_W - 1, Math.ceil(state.camX + halfCols));
+    const minTileY = Math.max(0, Math.floor(state.camY - halfRows));
+    const maxTileY = Math.min(WORLD_H - 1, Math.ceil(state.camY + halfRows));
+
     // Update dynamic vehicles & trams VBO
     const dynamicVertCount = updateAndBuildTraffic(dt);
 
+    gl.clearColor(0.05, 0.06, 0.08, 1.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     gl.uniform2f(uCamLoc, state.camX, state.camY);
@@ -2491,16 +4146,46 @@
     gl.uniform1f(uGridModeLoc, state.showGrid ? 1.0 : 0.0);
     gl.uniform1f(uCollModeLoc, state.showCollision ? 1.0 : 0.0);
 
-    // Draw Call 1: Smooth Vector Ground Plane
-    bindVertexLayout(mesh.vbo);
+    // --- Draw Call 1: Pre-Baked WebGL Ground Texture (Exact same method & 8.192 px/unit resolution as trasa.html & Map 1!) ---
     gl.uniform1f(uIsGroundLoc, 1.0);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.activeTexture(gl.TEXTURE0);
 
-    // Draw Call 2: All Smooth 2.5D Buildings
+    if (usesSectorMap()) {
+      if (globalOverview) {
+        bindVertexLayout(globalOverview.vbo);
+        gl.bindTexture(gl.TEXTURE_2D, globalOverview.tex);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
+
+      if (state.effectiveZoom >= 0.3) {
+        const minSecX = Math.max(0, Math.floor((state.camX - halfCols) / SECTOR_UNITS));
+        const maxSecX = Math.min(Math.floor(WORLD_W / SECTOR_UNITS), Math.floor((state.camX + halfCols) / SECTOR_UNITS));
+        const minSecY = Math.max(0, Math.floor((state.camY - halfRows) / SECTOR_UNITS));
+        const maxSecY = Math.min(Math.floor(WORLD_H / SECTOR_UNITS), Math.floor((state.camY + halfRows) / SECTOR_UNITS));
+
+        for (let sy = minSecY; sy <= maxSecY; sy++) {
+          for (let sx = minSecX; sx <= maxSecX; sx++) {
+            const sec = getOrBakeSector(sx, sy);
+            bindVertexLayout(sec.vbo);
+            gl.bindTexture(gl.TEXTURE_2D, sec.tex);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+          }
+        }
+      }
+    } else {
+      bindVertexLayout(mesh.vbo);
+      gl.bindTexture(gl.TEXTURE_2D, groundTex);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+
+    // --- Draw Call 2: All Smooth 2.5D Buildings ---
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bldgAtlasTex);
     gl.uniform1f(uIsGroundLoc, 0.0);
+    bindVertexLayout(mesh.vbo);
     gl.drawArrays(gl.TRIANGLES, mesh.bldgStartVertex, mesh.bldgVertexCount);
 
-    // Draw Call 3: All Moving 2.5D Cars & MPK Poznań Trams!
+    // --- Draw Call 3: All Moving 2.5D Cars & MPK Poznań Trams! ---
     if (dynamicVertCount > 0) {
       bindVertexLayout(dynamicVbo);
       gl.drawArrays(gl.TRIANGLES, 0, dynamicVertCount);
@@ -2509,12 +4194,22 @@
     // 2D Overlay: Skidmarks, Headlights, Particles, Labels & Collision Debug
     lctx.clearRect(0, 0, w, h);
 
-    const halfCols = Math.ceil(w / tilePx / 2) + 6;
-    const halfRows = Math.ceil(h / tilePx / 2) + 6;
-    const minTileX = Math.max(0, Math.floor(state.camX - halfCols));
-    const maxTileX = Math.min(GRID - 1, Math.ceil(state.camX + halfCols));
-    const minTileY = Math.max(0, Math.floor(state.camY - halfRows));
-    const maxTileY = Math.min(GRID - 1, Math.ceil(state.camY + halfRows));
+    // Draw green dashed 500m zone circle outlines on Trasa map (just like trasa.html!)
+    if (usesSectorMap() && trasaAnchors.length > 0 && activeMapKey === 'trasa') {
+      lctx.save();
+      lctx.strokeStyle = 'rgba(89, 255, 103, 0.55)';
+      lctx.lineWidth = 2;
+      lctx.setLineDash([8, 6]);
+      for (const a of trasaAnchors) {
+        const sx = centerX + (a.x - state.camX) * tilePx;
+        const sy = centerY + (a.y - state.camY) * tilePx;
+        const sr = a.radiusUnits * tilePx;
+        lctx.beginPath();
+        lctx.arc(sx, sy, sr, 0, Math.PI * 2);
+        lctx.stroke();
+      }
+      lctx.restore();
+    }
 
     // 1. Render Persistent Tire Skidmarks / Mud Tracks on Ground Plane
     lctx.lineCap = 'round';
@@ -2601,6 +4296,122 @@
       lctx.restore();
     }
 
+    // 2B. Render GTA 1 On-Foot Character ("Ludzik") + Pistol + Muzzle Flash + Bullet Tracers!
+    if (player.mode === 'foot') {
+      const pedScreenX = centerX + (player.pedX - state.camX) * tilePx;
+      const pedScreenY = centerY + (player.pedY - state.camY) * tilePx;
+      const isMoving = Math.hypot(player.pedVx, player.pedVy) > 0.3;
+      const swing = isMoving ? Math.sin(player.walkCycle) : 0;
+
+      // Update aim angle toward mouse cursor smoothly when moving mouse
+      lctx.save();
+      lctx.translate(pedScreenX, pedScreenY);
+      lctx.rotate(player.pedAngle);
+
+      const scale = Math.max(0.65, tilePx / 16);
+
+      // Drop shadow under ludzik
+      lctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
+      lctx.beginPath();
+      lctx.arc(1.5, 2.0, 5.5 * scale, 0, Math.PI * 2);
+      lctx.fill();
+
+      // Animated stepping feet (left & right dark boots sticking out during stride)
+      lctx.fillStyle = '#181a20';
+      lctx.fillRect((swing * 3.5 - 1.5) * scale, -3.6 * scale, 3.4 * scale, 2.2 * scale);
+      lctx.fillRect((-swing * 3.5 - 1.5) * scale, 1.4 * scale, 3.4 * scale, 2.2 * scale);
+
+      // Shoulders / Blue retro tracksuit jacket with white stripes
+      lctx.fillStyle = '#2466cc';
+      lctx.strokeStyle = '#0d1017';
+      lctx.lineWidth = 1.2;
+      lctx.beginPath();
+      lctx.roundRect(-3.2 * scale, -5.2 * scale, 6.4 * scale, 10.4 * scale, 2.5 * scale);
+      lctx.fill();
+      lctx.stroke();
+
+      // White shoulder stripes
+      lctx.fillStyle = '#f0f4ff';
+      lctx.fillRect(-1.2 * scale, -4.8 * scale, 2.4 * scale, 1.3 * scale);
+      lctx.fillRect(-1.2 * scale, 3.5 * scale, 2.4 * scale, 1.3 * scale);
+
+      // Right extended arm holding black 9mm pistol forward
+      lctx.fillStyle = '#2466cc';
+      lctx.fillRect(1.5 * scale, 1.6 * scale, 4.5 * scale, 2.3 * scale);
+      // Hand
+      lctx.fillStyle = '#f2c199';
+      lctx.beginPath();
+      lctx.arc(6.0 * scale, 2.6 * scale, 1.4 * scale, 0, Math.PI * 2);
+      lctx.fill();
+      // Pistol barrel
+      lctx.fillStyle = '#1c1e24';
+      lctx.fillRect(6.2 * scale, 1.7 * scale, 4.2 * scale, 1.7 * scale);
+
+      // Bright yellow/orange Muzzle Flash star when firing pistol!
+      if (player.muzzleFlashTimer > 0) {
+        lctx.fillStyle = '#fff599';
+        lctx.beginPath();
+        lctx.arc(11.5 * scale, 2.5 * scale, 4.2 * scale, 0, Math.PI * 2);
+        lctx.fill();
+        lctx.fillStyle = '#ff6622';
+        lctx.beginPath();
+        lctx.moveTo(10.2 * scale, 2.5 * scale);
+        lctx.lineTo(17.5 * scale, -1.2 * scale);
+        lctx.lineTo(15.0 * scale, 2.5 * scale);
+        lctx.lineTo(17.5 * scale, 6.2 * scale);
+        lctx.closePath();
+        lctx.fill();
+      }
+
+      // Head (skin + dark hair cap)
+      lctx.fillStyle = '#f2c199';
+      lctx.beginPath();
+      lctx.arc(0.4 * scale, 0, 3.3 * scale, 0, Math.PI * 2);
+      lctx.fill();
+      lctx.stroke();
+
+      lctx.fillStyle = '#2b1d12';
+      lctx.beginPath();
+      lctx.arc(-0.5 * scale, 0, 2.8 * scale, Math.PI * 0.45, -Math.PI * 0.45);
+      lctx.fill();
+
+      lctx.restore();
+
+      // Highlight green "[F] WSIĄDŹ" indicator over parked car if ludzik is nearby
+      const distOwn = Math.hypot(player.pedX - player.x, player.pedY - player.y);
+      if (distOwn <= 2.8) {
+        const cxScreen = centerX + (player.x - state.camX) * tilePx;
+        const cyScreen = centerY + (player.y - state.camY) * tilePx;
+        lctx.font = 'bold 11px "Courier New", monospace';
+        lctx.textAlign = 'center';
+        lctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+        lctx.fillText('[F / ENTER] WSIĄDŹ', cxScreen + 1, cyScreen - 18 + 1);
+        lctx.fillStyle = '#59ff67';
+        lctx.fillText('[F / ENTER] WSIĄDŹ', cxScreen, cyScreen - 18);
+      }
+    }
+
+    // 2C. Render Active Pistol Bullet Tracers
+    for (let i = 0; i < bullets.length; i++) {
+      const b = bullets[i];
+      const bx0 = centerX + (b.prevX - state.camX) * tilePx;
+      const by0 = centerY + (b.prevY - state.camY) * tilePx;
+      const bx1 = centerX + (b.x - state.camX) * tilePx;
+      const by1 = centerY + (b.y - state.camY) * tilePx;
+
+      lctx.strokeStyle = 'rgba(255, 240, 130, 0.95)';
+      lctx.lineWidth = 2.2;
+      lctx.beginPath();
+      lctx.moveTo(bx0, by0);
+      lctx.lineTo(bx1, by1);
+      lctx.stroke();
+
+      lctx.fillStyle = '#ffffff';
+      lctx.beginPath();
+      lctx.arc(bx1, by1, 2.0, 0, Math.PI * 2);
+      lctx.fill();
+    }
+
     // 3. Render Tire Smoke, Grass Dust & Wall Collision Sparks
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
@@ -2643,83 +4454,168 @@
 
     if (state.showLabels && state.effectiveZoom >= 0.45) {
       lctx.textAlign = 'center';
-      lctx.font = 'bold 11px "Courier New", monospace';
 
+      // 1. House Numbers on Building Roofs (visible when zoomed in >= 0.70)
+      if (state.effectiveZoom >= 0.70 && mapData.houseNumbers) {
+        lctx.font = 'bold 10px "Courier New", monospace';
+        for (const hn of mapData.houseNumbers) {
+          if (hn.x < minTileX || hn.x > maxTileX || hn.y < minTileY || hn.y > maxTileY) continue;
+          const bx = centerX + (hn.x - state.camX) * tilePx;
+          const by = centerY + (hn.y - state.camY) * tilePx;
+          const dx = bx - centerX, dy = by - centerY;
+          const rLen = Math.hypot(dx, dy);
+          const clampedLen = Math.min(rLen, 280);
+          const hFactor = (hn.floors || 2) * 0.015 * state.perspectiveStrength;
+          const rx = bx + (rLen > 0.01 ? (dx / rLen) * clampedLen * hFactor : 0);
+          const ry = by + (rLen > 0.01 ? (dy / rLen) * clampedLen * hFactor : 0);
+
+          lctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+          lctx.fillText(hn.num, rx + 1, ry + 1);
+          lctx.fillStyle = '#b8e2ff';
+          lctx.fillText(hn.num, rx, ry);
+        }
+      }
+
+      // 2. Street Names
+      lctx.font = 'bold 11px "Courier New", monospace';
       for (const st of mapData.streets) {
         if (st.x < minTileX || st.x > maxTileX || st.y < minTileY || st.y > maxTileY) continue;
         const sx = centerX + (st.x - state.camX) * tilePx;
         const sy = centerY + (st.y - state.camY) * tilePx;
+        let ang = st.angle || 0;
+        if (ang > Math.PI / 2 || ang < -Math.PI / 2) ang += Math.PI;
+        lctx.save();
+        lctx.translate(sx, sy);
+        lctx.rotate(ang);
         lctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-        lctx.fillText(st.name, sx + 1, sy + 1);
+        lctx.fillText(st.name, 1, 1);
         lctx.fillStyle = '#d8d2b8';
-        lctx.fillText(st.name, sx, sy);
+        lctx.fillText(st.name, 0, 0);
+        lctx.restore();
       }
 
+      // 3. Shops, Companies & Services (POIs)
+      if (state.effectiveZoom >= 0.50 && mapData.pois) {
+        lctx.font = 'bold 11px "Courier New", monospace';
+        for (const poi of mapData.pois) {
+          if (poi.x < minTileX || poi.x > maxTileX || poi.y < minTileY || poi.y > maxTileY) continue;
+          const bx = centerX + (poi.x - state.camX) * tilePx;
+          const by = centerY + (poi.y - state.camY) * tilePx;
+          const dx = bx - centerX, dy = by - centerY;
+          const rLen = Math.hypot(dx, dy);
+          const clampedLen = Math.min(rLen, 280);
+          const hFactor = (poi.floors || 2) * 0.015 * state.perspectiveStrength;
+          const rx = bx + (rLen > 0.01 ? (dx / rLen) * clampedLen * hFactor : 0);
+          const ry = by + (rLen > 0.01 ? (dy / rLen) * clampedLen * hFactor : 0) - 9;
+
+          const tag = poi.kind === 'shop' ? `[SKLEP] ${poi.name}` : (poi.kind === 'company' ? `[FIRMA] ${poi.name}` : poi.name);
+          lctx.fillStyle = 'rgba(0, 0, 0, 0.88)';
+          lctx.fillText(tag, rx + 1, ry + 1);
+          lctx.fillStyle = poi.kind === 'shop' ? '#ff9f43' : (poi.kind === 'company' ? '#54d4ff' : '#ffd166');
+          lctx.fillText(tag, rx, ry);
+        }
+      }
+
+      // 4. Key Landmarks & Waypoints
       lctx.font = 'bold 12px "Courier New", monospace';
       for (const lm of mapData.landmarks) {
         if (lm.x < minTileX || lm.x > maxTileX || lm.y < minTileY || lm.y > maxTileY) continue;
         const bx = centerX + (lm.x - state.camX) * tilePx;
         const by = centerY + (lm.y - state.camY) * tilePx;
-        const hFactor = (lm.floors || 4) * 0.042 * state.perspectiveStrength;
-        const rx = bx + (bx - centerX) * hFactor;
-        const ry = by + (by - centerY) * hFactor;
+        const dx = bx - centerX, dy = by - centerY;
+        const rLen = Math.hypot(dx, dy);
+        const clampedLen = Math.min(rLen, 280);
+        const hFactor = (lm.floors || 2) * 0.015 * state.perspectiveStrength;
+        const rx = bx + (rLen > 0.01 ? (dx / rLen) * clampedLen * hFactor : 0);
+        const ry = by + (rLen > 0.01 ? (dy / rLen) * clampedLen * hFactor : 0);
+
+        if (lm.name.includes('HQ Systemia')) {
+          lctx.save();
+          lctx.font = '900 13px "Courier New", monospace';
+          const textW = lctx.measureText('HQ SYSTEMIA').width;
+          lctx.fillStyle = 'rgba(12, 24, 18, 0.92)';
+          lctx.strokeStyle = '#59ff67';
+          lctx.lineWidth = 2;
+          lctx.fillRect(rx - textW * 0.5 - 8, ry - 22, textW + 16, 20);
+          lctx.strokeRect(rx - textW * 0.5 - 8, ry - 22, textW + 16, 20);
+          lctx.fillStyle = '#59ff67';
+          lctx.fillText('HQ SYSTEMIA', rx, ry - 8);
+          lctx.font = 'bold 10px "Courier New", monospace';
+          lctx.fillStyle = '#ffe066';
+          lctx.fillText('ul. Karpia 21A', rx, ry + 8);
+          lctx.restore();
+          continue;
+        }
 
         lctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
         lctx.fillText(lm.name, rx + 1, ry + 1);
         lctx.fillText(lm.name, rx - 1, ry + 1);
-        lctx.fillStyle = '#ffe066';
+        lctx.fillStyle = lm.style === 5 ? '#59ff67' : '#ffe066';
         lctx.fillText(lm.name, rx, ry);
       }
 
       // Label moving MPK trams with line numbers (Linia 3 / Linia 10)
-      lctx.font = 'bold 10px "Courier New", monospace';
-      for (const tr of trams) {
-        const s = samplePath(tr.track, tr.dist);
-        if (s.x < minTileX || s.x > maxTileX || s.y < minTileY || s.y > maxTileY) continue;
-        const bx = centerX + (s.x - state.camX) * tilePx;
-        const by = centerY + (s.y - state.camY) * tilePx;
-        const hFactor = 1.15 * 0.042 * state.perspectiveStrength;
-        const rx = bx + (bx - centerX) * hFactor;
-        const ry = by + (by - centerY) * hFactor - 8;
-        const label = `MPK [${tr.lineNumber}]`;
-        lctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
-        lctx.fillText(label, rx + 1, ry + 1);
-        lctx.fillStyle = '#59ff67';
-        lctx.fillText(label, rx, ry);
+      if (state.showTraffic) {
+        lctx.font = 'bold 10px "Courier New", monospace';
+        for (const tr of trams) {
+          const s = samplePath(tr.track, tr.dist);
+          if (s.x < minTileX || s.x > maxTileX || s.y < minTileY || s.y > maxTileY) continue;
+          const bx = centerX + (s.x - state.camX) * tilePx;
+          const by = centerY + (s.y - state.camY) * tilePx;
+          const hFactor = 1.15 * 0.042 * state.perspectiveStrength;
+          const rx = bx + (bx - centerX) * hFactor;
+          const ry = by + (by - centerY) * hFactor - 8;
+          const label = `MPK [${tr.lineNumber}]`;
+          lctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+          lctx.fillText(label, rx + 1, ry + 1);
+          lctx.fillStyle = '#59ff67';
+          lctx.fillText(label, rx, ry);
+        }
       }
     }
 
     // Update Minimap Radar (including live moving trams, traffic & player heading arrow!)
     minimapCtx.drawImage(minimapBase, 0, 0);
 
-    // Draw moving cars on radar
-    minimapCtx.fillStyle = '#ff9933';
-    for (const c of cars) {
-      const s = samplePath(c.road.metric, c.dist);
-      minimapCtx.fillRect((s.x / GRID) * 200 - 1, (s.y / GRID) * 200 - 1, 2, 2);
+    if (state.showTraffic) {
+      // Draw moving cars on radar
+      minimapCtx.fillStyle = '#ff9933';
+      for (const c of cars) {
+        const s = samplePath(c.road.metric, c.dist);
+        minimapCtx.fillRect((s.x / WORLD_W) * 200 - 1, (s.y / WORLD_H) * 200 - 1, 2, 2);
+      }
+
+      // Draw moving MPK trams on radar
+      minimapCtx.fillStyle = '#59ff67';
+      for (const tr of trams) {
+        const s = samplePath(tr.track, tr.dist);
+        minimapCtx.fillRect((s.x / WORLD_W) * 200 - 2, (s.y / WORLD_H) * 200 - 2, 4, 4);
+      }
     }
 
-    // Draw moving MPK trams on radar
-    minimapCtx.fillStyle = '#59ff67';
-    for (const tr of trams) {
-      const s = samplePath(tr.track, tr.dist);
-      minimapCtx.fillRect((s.x / GRID) * 200 - 2, (s.y / GRID) * 200 - 2, 4, 4);
-    }
-
-    const viewX = (minTileX / GRID) * 200;
-    const viewY = (minTileY / GRID) * 200;
-    const viewW = ((maxTileX - minTileX) / GRID) * 200;
-    const viewH = ((maxTileY - minTileY) / GRID) * 200;
+    const viewX = (minTileX / WORLD_W) * 200;
+    const viewY = (minTileY / WORLD_H) * 200;
+    const viewW = ((maxTileX - minTileX) / WORLD_W) * 200;
+    const viewH = ((maxTileY - minTileY) / WORLD_H) * 200;
     minimapCtx.strokeStyle = '#ffd15c';
     minimapCtx.lineWidth = 1.2;
     minimapCtx.strokeRect(viewX, viewY, viewW, viewH);
 
-    // Player directional triangle on radar
-    const pxRadar = (player.x / GRID) * 200;
-    const pyRadar = (player.y / GRID) * 200;
+    // Player directional triangle on radar (shows ludzik position when on foot, plus cyan dot for parked car)
+    if (player.mode === 'foot') {
+      const carRadarX = (player.x / WORLD_W) * 200;
+      const carRadarY = (player.y / WORLD_H) * 200;
+      minimapCtx.fillStyle = '#00e5ff';
+      minimapCtx.fillRect(carRadarX - 2, carRadarY - 2, 4, 4);
+    }
+    const activeRadarX = player.mode === 'foot' ? player.pedX : player.x;
+    const activeRadarY = player.mode === 'foot' ? player.pedY : player.y;
+    const activeRadarAng = player.mode === 'foot' ? player.pedAngle : player.angle;
+    const pxRadar = (activeRadarX / WORLD_W) * 200;
+    const pyRadar = (activeRadarY / WORLD_H) * 200;
     minimapCtx.save();
     minimapCtx.translate(pxRadar, pyRadar);
-    minimapCtx.rotate(player.angle);
+    minimapCtx.rotate(activeRadarAng);
     minimapCtx.fillStyle = '#ff2a2a';
     minimapCtx.strokeStyle = '#ffffff';
     minimapCtx.lineWidth = 1.2;
@@ -2733,6 +4629,12 @@
     minimapCtx.restore();
 
     updateHUD(now);
+    } catch (err) {
+      if (!frame.reported) {
+        frame.reported = true;
+        console.error(err);
+      }
+    }
     requestAnimationFrame(frame);
   }
 
