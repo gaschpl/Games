@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#172014" />
+  <title>Strzelanina na Łące w Tucznie u Taty i Zosi</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🌿%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/style.css?v=55" />
+</head>
+<body>
+  <canvas id="game" aria-label="Strzelanina na Łące w Tucznie u Taty i Zosi. Dwóch graczy. Gracz 1: WASD, E, spacja. Gracz 2: pad, drążek, A, X albo RT."></canvas>
+  <div class="vignette" aria-hidden="true"></div>
+  <div class="hud">
+    <p class="title">Strzelanina na Łące w Tucznie u Taty i Zosi</p>
+    <p class="score" id="score">Gracz 1: 0 gold<br />Gracz 2: 0 gold</p>
+    <p class="hint" id="hint">Gracz 1: WASD, E, spacja<br />Gracz 2: pad — drążek, A, X albo RT<br />Dwa jednorożce · gold</p>
+    <label class="scale" for="scale"><span id="scale-label">Skala obrazu</span>
+      <input id="scale" type="range" min="1" max="8" step="1" value="1" />
+    </label>
+    <button type="button" id="music" class="music" aria-pressed="true">Muzyka: włączona</button>
+  </div>
+  <p class="banner" id="banner" hidden>Poziom 2</p>
+  <div class="menu" id="menu">
+    <p class="menu-title">Ilu graczy?</p>
+    <button type="button" id="one">1 gracz</button>
+    <button type="button" id="two">2 graczy</button>
+    <p class="menu-note">Klawisz 1 albo 2</p>
+    <p class="menu-title set-title">Ustawienia</p>
+    <label class="set">Bieg <span id="run-v">76</span>
+      <input id="set-run" type="range" min="40" max="160" step="2" value="76" />
+    </label>
+    <label class="set">Energia gracza <span id="energy-v">100</span>
+      <input id="set-energy" type="range" min="20" max="300" step="10" value="100" />
+    </label>
+    <label class="set">Energia dzika <span id="boar-energy-v">100</span>
+      <input id="set-boar-energy" type="range" min="20" max="300" step="10" value="100" />
+    </label>
+    <label class="set">Obrażenia dzika <span id="boar-dmg-v">10</span>
+      <input id="set-boar-dmg" type="range" min="1" max="40" step="1" value="10" />
+    </label>
+    <label class="set">Kuchenka, % na sekundę <span id="regen-v">1</span>
+      <input id="set-regen" type="range" min="1" max="20" step="1" value="1" />
+    </label>
+    <label class="set">Powrót zwierząt, sekundy <span id="return-v">120</span>
+      <input id="set-return" type="range" min="10" max="300" step="10" value="120" />
+    </label>
+    <label class="set">Motyle <span id="flies-v">72</span>
+      <input id="set-flies" type="range" min="0" max="150" step="1" value="72" />
+    </label>
+    <label class="set">Stawy <span id="ponds-v">3</span>
+      <input id="set-ponds" type="range" min="1" max="8" step="1" value="3" />
+    </label>
+    <label class="set">Kaczki na stawek <span id="ducks-v">2</span>
+      <input id="set-ducks" type="range" min="0" max="6" step="1" value="2" />
+    </label>
+    <label class="set">Dziki <span id="boars-v">8</span>
+      <input id="set-boars" type="range" min="0" max="30" step="1" value="8" />
+    </label>
+  </div>
+  <script src="js/game.js?v=55"></script>
+</body>
+</html>
