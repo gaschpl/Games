@@ -295,6 +295,7 @@ window.addEventListener("error", (event) => {
     button.textContent = document.body.classList.contains("phone") ? "🐗" : (on ? "Dziki: włączone" : "Dziki: wyłączone");
     button.classList.toggle("off", document.body.classList.contains("phone") && !on);
     button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.hidden = netRole === "guest";
   }
 
   function noteFreq(name) {
@@ -2957,6 +2958,8 @@ window.addEventListener("error", (event) => {
       netTune = msg.tune || null;
       if (msg.mapId) mapId = msg.mapId;
       netLog("Wchodzę jako gracz " + (netSlot + 1) + ".");
+      const boarButton = document.getElementById("boars-toggle");
+      if (boarButton) boarButton.hidden = true;
       startGuestGame();
     }
   }
@@ -6244,14 +6247,15 @@ window.addEventListener("error", (event) => {
       if (title) {
         title.textContent = (want
           ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v135";
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v136";
       }
-      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v135";
+      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v136";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
         boarButton.textContent = want ? "🐗" : (boarsOn ? "Dziki: włączone" : "Dziki: wyłączone");
         boarButton.classList.toggle("off", want && !boarsOn);
+        boarButton.hidden = netRole === "guest";
       }
       if (want && (mapId === "plewiska" || mapId === "sehnde") && typeof pickMap === "function") pickMap("tuczno");
       updateScore();
@@ -6453,6 +6457,8 @@ window.addEventListener("error", (event) => {
       netLog("Łączę z kodem " + netCode + "…");
       netRole = "guest";
       netSeated = false;
+      const boarButton = document.getElementById("boars-toggle");
+      if (boarButton) boarButton.hidden = true;
       startRoom("guest");
     };
     document.getElementById("net-join")?.addEventListener("click", () => joinNet());
@@ -6579,6 +6585,7 @@ window.addEventListener("error", (event) => {
       });
       const boarButton = document.getElementById("boars-toggle");
       boarButton?.addEventListener("click", () => {
+        if (netRole === "guest") return;
         setBoars(!boarsOn);
         boarButton.blur();
       });

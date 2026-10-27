@@ -509,6 +509,10 @@ body.phone .hud-buttons .music.off {
   opacity: 0.35;
 }
 
+#boars-toggle[hidden] {
+  display: none !important;
+}
+
 body.phone .menu {
   width: min(640px, calc(100vw - 16px));
   max-height: calc(100vh - 12px);
