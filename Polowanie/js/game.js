@@ -157,6 +157,8 @@ window.addEventListener("error", (event) => {
   const touchStick = { x: 0, y: 0 };
   let netPeer = null;
   let mqttClient = null;
+  let netConn = null;
+  const netConns = [null, null];
   let netSelf = "";
   let netSeated = false;
   let netBroker = "emqx";
@@ -792,19 +794,25 @@ window.addEventListener("error", (event) => {
     state.players.forEach((src, index) => {
       const who = actors[index];
       if (!who || !src) return;
-      who.x = src.x;
-      who.y = src.y;
-      who.dir = src.dir;
-      who.face = src.face;
+      const mine = netRole === "guest" && index === netSlot;
+      const gap = Math.hypot((who.x || 0) - src.x, (who.y || 0) - src.y);
+      const placeChanged = who.indoors !== src.indoors || !!who.mounted !== !!src.mounted;
       who.gold = src.gold;
       who.energy = src.energy;
       who.mounted = src.mounted;
       who.mountKind = src.mountKind;
       who.indoors = src.indoors;
       who.weapon = src.weapon;
-      who.moving = src.moving;
-      who.phase = src.phase;
-      who.slash = src.slash || 0;
+      const snap = !mine || placeChanged || gap > 64;
+      if (snap) {
+        who.x = src.x;
+        who.y = src.y;
+        who.dir = src.dir;
+        who.face = src.face;
+        who.moving = src.moving;
+        who.phase = src.phase;
+      }
+      who.slash = mine ? Math.max(who.slash || 0, src.slash || 0) : (src.slash || 0);
       who.asleep = !!src.asleep;
       who.netHeld = src.held;
     });
@@ -2878,6 +2886,7 @@ window.addEventListener("error", (event) => {
     if (!playerCount) return;
     if (netRole === "guest") {
       applyNetState();
+      predictGuest(dt);
       const me = localActor();
       useActor(me);
       updateCamera();
@@ -2996,40 +3005,89 @@ window.addEventListener("error", (event) => {
     }
   }
 
+  let netStamp = "";
+
+  function predictGuest(dt) {
+    const me = localActor();
+    useActor(me);
+    const stick = readStick();
+    const len = Math.hypot(stick.x, stick.y);
+    const ox = player.x;
+    const oy = player.y;
+    if (len > 0.08) {
+      player.face = facingFrom(stick.x, stick.y);
+      let speed = mounted ? tune.run * 1.5 : ((keys.has("shift") || touchRun) ? tune.run : 40);
+      if (playerDepth()) speed *= 0.5;
+      const nx = player.x + (stick.x / len) * speed * dt;
+      const ny = player.y + (stick.y / len) * speed * dt;
+      if (fits(nx, player.y)) player.x = nx;
+      if (fits(player.x, ny)) player.y = ny;
+    }
+    const moved = Math.hypot(player.x - ox, player.y - oy);
+    player.moving = moved > 0.04;
+    if (player.moving) player.phase += (moved / TILE) * 4;
+    if (player.slash > 0) player.slash = Math.max(0, player.slash - dt);
+    stepFacing(dt);
+    keepActor();
+  }
+
+  function netUp(obj) {
+    if (netBroker === "webrtc") {
+      if (netConn && netConn.open) netConn.send(obj);
+      return;
+    }
+    if (mqttClient && mqttClient.connected) {
+      mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify(obj));
+    }
+  }
+
+  function netDown(obj) {
+    if (netBroker === "webrtc") {
+      netConns.forEach((conn) => {
+        if (conn && conn.open) conn.send(obj);
+      });
+      return;
+    }
+    if (mqttClient && mqttClient.connected) {
+      mqttClient.publish("polowanie/" + netCode + "/down", JSON.stringify(obj));
+    }
+  }
+
   function syncNet(dt) {
     netAcc += dt;
-    if (netAcc < 0.1) return;
-    netAcc = 0;
-    if (!mqttClient || !mqttClient.connected) return;
     if (netRole === "host") {
+      if (netAcc < 0.1) return;
+      netAcc = 0;
       const who = {};
       guestIds.forEach((id, index) => {
         if (id) who[id] = index + 1;
       });
-      mqttClient.publish("polowanie/" + netCode + "/down", JSON.stringify({
-        type: "state", who, mapId, seed: netSeed, tune, state: packNet(),
-      }));
+      netDown({ type: "state", who, mapId, seed: netSeed, tune, state: packNet() });
       return;
     }
     if (netRole !== "guest") return;
-    if (!netSeated) {
-      mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify({ type: "hello", id: netSelf }));
+    if (!netSeated && netAcc >= 0.3) {
+      netAcc = 0;
+      netUp({ type: "hello", id: netSelf });
     }
     const stick = readStick();
     const body = {
       type: "input",
       id: netSelf,
-      x: stick.x,
-      y: stick.y,
+      x: Math.round(stick.x * 20) / 20,
+      y: Math.round(stick.y * 20) / 20,
       run: keys.has("shift") || touchRun,
       fire: netPulse.fire,
       act: netPulse.act,
       weapon: netPulse.weapon,
     };
+    const stamp = [body.x, body.y, body.run, body.fire, body.act, body.weapon].join("|");
+    if (stamp === netStamp) return;
+    netStamp = [body.x, body.y, body.run, false, false, false].join("|");
     netPulse.fire = false;
     netPulse.act = false;
     netPulse.weapon = false;
-    mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify(body));
+    netUp(body);
   }
 
   function applyPad() {
@@ -6279,9 +6337,9 @@ window.addEventListener("error", (event) => {
       if (title) {
         title.textContent = (want
           ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v137";
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v138";
       }
-      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v137";
+      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v138";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
@@ -6394,15 +6452,17 @@ window.addEventListener("error", (event) => {
     document.getElementById("mode-join")?.addEventListener("click", () => pickMode("join"));
     const pickBroker = (name) => {
       netBroker = name;
-      for (const id of ["broker-emqx", "broker-hivemq", "join-broker-emqx", "join-broker-hivemq"]) {
+      for (const id of ["broker-emqx", "broker-hivemq", "broker-webrtc", "join-broker-emqx", "join-broker-hivemq", "join-broker-webrtc"]) {
         const button = document.getElementById(id);
         if (button) button.classList.toggle("picked", id.endsWith(name));
       }
     };
     document.getElementById("broker-emqx")?.addEventListener("click", () => pickBroker("emqx"));
     document.getElementById("broker-hivemq")?.addEventListener("click", () => pickBroker("hivemq"));
+    document.getElementById("broker-webrtc")?.addEventListener("click", () => pickBroker("webrtc"));
     document.getElementById("join-broker-emqx")?.addEventListener("click", () => pickBroker("emqx"));
     document.getElementById("join-broker-hivemq")?.addEventListener("click", () => pickBroker("hivemq"));
+    document.getElementById("join-broker-webrtc")?.addEventListener("click", () => pickBroker("webrtc"));
     const failStart = (error) => {
       const menu = document.getElementById("menu");
       if (menu) menu.hidden = false;
@@ -6411,6 +6471,54 @@ window.addEventListener("error", (event) => {
       document.getElementById("net-log")?.classList.add("open");
     };
     const startRoom = (role) => {
+      if (!netSelf) netSelf = "p" + Math.random().toString(36).slice(2, 10);
+      if (mqttClient) {
+        try { mqttClient.end(true); } catch (e) {}
+        mqttClient = null;
+      }
+      netConn = null;
+      netConns[0] = null;
+      netConns[1] = null;
+      if (netBroker === "webrtc") {
+        if (typeof Peer !== "function") {
+          netLog("Brak WebRTC. Odśwież stronę.");
+          document.getElementById("net-log")?.classList.add("open");
+          return false;
+        }
+        if (netPeer) netPeer.destroy();
+        if (role === "host") {
+          netPeer = new Peer(netCode);
+          netPeer.on("open", () => netLog("Kod pokoju: " + netCode + " · WebRTC"));
+          netPeer.on("connection", (conn) => {
+            let slot = netConns.findIndex((open) => open && open.peer === conn.peer);
+            if (slot < 0) slot = netConns.findIndex((open) => !open || !open.open);
+            if (slot < 0) {
+              netLog("Pokój pełny. Mogą dołączyć dwie osoby.");
+              conn.close();
+              return;
+            }
+            netConns[slot] = conn;
+            conn.on("data", (msg) => takeGuestMsg(msg));
+            conn.on("open", () => netLog("Dołączył gracz " + (slot + 2)));
+          });
+        } else {
+          netPeer = new Peer();
+          netPeer.on("open", () => {
+            const conn = netPeer.connect(netCode, { reliable: true });
+            netConn = conn;
+            conn.on("open", () => {
+              netLog("Połączono. Czekam na grę.");
+              netUp({ type: "hello", id: netSelf });
+            });
+            conn.on("data", (msg) => takeHostMsg(msg));
+          });
+        }
+        netPeer.on("error", (err) => {
+          netLog("WebRTC: " + ((err && (err.type || err.message)) || "błąd"));
+          document.getElementById("net-log")?.classList.add("open");
+        });
+        return true;
+      }
       if (typeof mqtt === "undefined") {
         netLog("Brak połączenia sieciowego. Oba urządzenia muszą mieć internet.");
         document.getElementById("net-log")?.classList.add("open");
@@ -6437,7 +6545,7 @@ window.addEventListener("error", (event) => {
         if (role === "host") netLog("Kod pokoju: " + netCode + " · " + (netBroker === "hivemq" ? "HiveMQ" : "EMQX"));
         else {
           netLog("Połączono. Czekam na grę.");
-          mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify({ type: "hello", id: netSelf }));
+          netUp({ type: "hello", id: netSelf });
         }
       });
       mqttClient.on("message", (_topic, payload) => {
