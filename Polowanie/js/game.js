@@ -162,6 +162,8 @@ window.addEventListener("error", (event) => {
   let netSelf = "";
   let netSeated = false;
   let netBroker = "emqx";
+  let pendingSave = null;
+  let localSocket = null;
   const cutWoods = [];
   const appliedCuts = new Set();
   const guestIds = [null, null];
@@ -3001,6 +3003,8 @@ window.addEventListener("error", (event) => {
       netLog("Wchodzę jako gracz " + (netSlot + 1) + ".");
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) boarButton.hidden = true;
+      const saveButton = document.getElementById("save-game");
+      if (saveButton) saveButton.hidden = true;
       startGuestGame();
     }
   }
@@ -3032,6 +3036,10 @@ window.addEventListener("error", (event) => {
   }
 
   function netUp(obj) {
+    if (netBroker === "local") {
+      if (localSocket && localSocket.readyState === 1) localSocket.send(JSON.stringify({ ch: "up", msg: obj }));
+      return;
+    }
     if (netBroker === "webrtc") {
       if (netConn && netConn.open) netConn.send(obj);
       return;
@@ -3042,6 +3050,10 @@ window.addEventListener("error", (event) => {
   }
 
   function netDown(obj) {
+    if (netBroker === "local") {
+      if (localSocket && localSocket.readyState === 1) localSocket.send(JSON.stringify({ ch: "down", msg: obj }));
+      return;
+    }
     if (netBroker === "webrtc") {
       netConns.forEach((conn) => {
         if (conn && conn.open) conn.send(obj);
@@ -6337,15 +6349,20 @@ window.addEventListener("error", (event) => {
       if (title) {
         title.textContent = (want
           ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v138";
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v139";
       }
-      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v138";
+      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v139";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
         boarButton.textContent = want ? "🐗" : (boarsOn ? "Dziki: włączone" : "Dziki: wyłączone");
         boarButton.classList.toggle("off", want && !boarsOn);
         boarButton.hidden = netRole === "guest";
+      }
+      const saveButton = document.getElementById("save-game");
+      if (saveButton) {
+        saveButton.hidden = netRole === "guest";
+        saveButton.textContent = want ? "💾" : "Zapis";
       }
       if (want && (mapId === "plewiska" || mapId === "sehnde") && typeof pickMap === "function") pickMap("tuczno");
       updateScore();
@@ -6366,6 +6383,9 @@ window.addEventListener("error", (event) => {
       enterPhoneFullscreen();
       playerCount = (netRole === "host" || netRole === "guest") ? 2 : (wantsPhone() ? 1 : (count === 2 ? 2 : 1));
       readTune();
+      if (pendingSave && pendingSave.seed) netSeed = pendingSave.seed;
+      else if (!netSeed) netSeed = Math.floor(Math.random() * 1000000000);
+      if (pendingSave && pendingSave.tune) Object.assign(tune, pendingSave.tune);
       if (netTune) Object.assign(tune, netTune);
       actors[0].energy = tune.energy;
       actors[1].energy = tune.energy;
@@ -6374,13 +6394,23 @@ window.addEventListener("error", (event) => {
       if (menu) menu.hidden = true;
       showLoad(0);
       await waitFrame();
-      const restoreRandom = netSeed ? installSeed(netSeed) : null;
+      const restoreRandom = installSeed(netSeed);
       try {
         if (treeSprites && bushSprites) await createWorld(treeSprites, bushSprites, showLoad);
       } finally {
         if (restoreRandom) restoreRandom();
       }
       if (boarsOn && boars.length < tune.boars) spawnBoars();
+      if (pendingSave && pendingSave.state && netRole !== "guest") {
+        netState = pendingSave.state;
+        applyNetState();
+        cutWoods.length = 0;
+        if (pendingSave.state.cuts) {
+          for (const row of pendingSave.state.cuts) cutWoods.push(row);
+        }
+        pendingSave = null;
+        netLog("Wczytano zapis z tego urządzenia.");
+      }
       hideLoad();
       sfx.arm();
       resize();
@@ -6452,17 +6482,23 @@ window.addEventListener("error", (event) => {
     document.getElementById("mode-join")?.addEventListener("click", () => pickMode("join"));
     const pickBroker = (name) => {
       netBroker = name;
-      for (const id of ["broker-emqx", "broker-hivemq", "broker-webrtc", "join-broker-emqx", "join-broker-hivemq", "join-broker-webrtc"]) {
+      for (const id of ["broker-emqx", "broker-hivemq", "broker-webrtc", "broker-local", "join-broker-emqx", "join-broker-hivemq", "join-broker-webrtc", "join-broker-local"]) {
         const button = document.getElementById(id);
         if (button) button.classList.toggle("picked", id.endsWith(name));
       }
+      const hostField = document.getElementById("broker-addr");
+      const joinField = document.getElementById("join-broker-addr");
+      if (hostField) hostField.hidden = name !== "local";
+      if (joinField) joinField.hidden = name !== "local";
     };
     document.getElementById("broker-emqx")?.addEventListener("click", () => pickBroker("emqx"));
     document.getElementById("broker-hivemq")?.addEventListener("click", () => pickBroker("hivemq"));
     document.getElementById("broker-webrtc")?.addEventListener("click", () => pickBroker("webrtc"));
+    document.getElementById("broker-local")?.addEventListener("click", () => pickBroker("local"));
     document.getElementById("join-broker-emqx")?.addEventListener("click", () => pickBroker("emqx"));
     document.getElementById("join-broker-hivemq")?.addEventListener("click", () => pickBroker("hivemq"));
     document.getElementById("join-broker-webrtc")?.addEventListener("click", () => pickBroker("webrtc"));
+    document.getElementById("join-broker-local")?.addEventListener("click", () => pickBroker("local"));
     const failStart = (error) => {
       const menu = document.getElementById("menu");
       if (menu) menu.hidden = false;
@@ -6519,6 +6555,39 @@ window.addEventListener("error", (event) => {
         });
         return true;
       }
+      if (netBroker === "local") {
+        const field = document.getElementById(role === "host" ? "broker-addr" : "join-broker-addr");
+        let host = ((field && field.value) || "").trim();
+        if (!host) host = location.hostname && location.hostname !== "gaschpl.github.io" ? location.hostname : "127.0.0.1";
+        host = host.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+        if (!host.includes(":")) host += ":8777";
+        if (location.protocol === "https:") {
+          netLog("Ten komputer działa, gdy gra jest otwarta z adresu laptopa (http), nie z GitHuba.");
+          document.getElementById("net-log")?.classList.add("open");
+        }
+        try { if (localSocket) localSocket.close(); } catch (e) {}
+        localSocket = new WebSocket("ws://" + host + "/ws");
+        localSocket.onopen = () => {
+          localSocket.send(JSON.stringify({ join: netCode }));
+          if (role === "host") netLog("Kod pokoju: " + netCode + " · ten komputer");
+          else {
+            netLog("Połączono. Czekam na grę.");
+            netUp({ type: "hello", id: netSelf });
+          }
+        };
+        localSocket.onmessage = (event) => {
+          let data = null;
+          try { data = JSON.parse(event.data); } catch (e) { return; }
+          if (!data || !data.msg) return;
+          if (role === "host") takeGuestMsg(data.msg);
+          else takeHostMsg(data.msg);
+        };
+        localSocket.onerror = () => {
+          netLog("Brak serwera na tym komputerze. Uruchom scripts/room_broker.py.");
+          document.getElementById("net-log")?.classList.add("open");
+        };
+        return true;
+      }
       if (typeof mqtt === "undefined") {
         netLog("Brak połączenia sieciowego. Oba urządzenia muszą mieć internet.");
         document.getElementById("net-log")?.classList.add("open");
@@ -6567,7 +6636,8 @@ window.addEventListener("error", (event) => {
       guestIds[0] = null;
       guestIds[1] = null;
       netRole = "host";
-      netSeed = Math.floor(Math.random() * 1000000000);
+      if (!(pendingSave && pendingSave.seed)) netSeed = Math.floor(Math.random() * 1000000000);
+      else netSeed = pendingSave.seed;
       readTune();
       return startRoom("host");
     };
@@ -6579,6 +6649,38 @@ window.addEventListener("error", (event) => {
       showLoad(0);
       const count = gameMode === "solo" ? 1 : 2;
       choosePlayers(count).catch(failStart);
+    });
+    document.getElementById("save-game")?.addEventListener("click", () => {
+      if (!playerCount || netRole === "guest") return;
+      const data = {
+        mapId,
+        seed: netSeed,
+        tune,
+        state: packNet(),
+        mode: netRole === "host" ? "host" : (playerCount === 2 ? "split" : "solo"),
+      };
+      localStorage.setItem("polowanie-save", JSON.stringify(data));
+      const cont = document.getElementById("continue-game");
+      if (cont) cont.hidden = false;
+      netLog("Zapisane na tym urządzeniu.");
+      document.getElementById("net-log")?.classList.add("open");
+    });
+    const cont = document.getElementById("continue-game");
+    if (cont) cont.hidden = !localStorage.getItem("polowanie-save");
+    cont?.addEventListener("click", () => {
+      try { pendingSave = JSON.parse(localStorage.getItem("polowanie-save") || ""); }
+      catch (e) { pendingSave = null; }
+      if (!pendingSave) return;
+      if (pendingSave.mapId) pickMap(pendingSave.mapId);
+      const mode = pendingSave.mode === "host" ? "host" : pendingSave.mode === "split" ? "split" : "solo";
+      pickMode(mode);
+      const menu = document.getElementById("menu");
+      if (mode === "host") {
+        if (!openRoom()) return;
+      } else netRole = "";
+      if (menu) menu.hidden = true;
+      showLoad(0);
+      choosePlayers(mode === "solo" ? 1 : 2).catch(failStart);
     });
     document.getElementById("net-log-btn")?.addEventListener("click", () => {
       const box = document.getElementById("net-log");
@@ -6601,6 +6703,8 @@ window.addEventListener("error", (event) => {
       netSeated = false;
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) boarButton.hidden = true;
+      const saveButton = document.getElementById("save-game");
+      if (saveButton) saveButton.hidden = true;
       startRoom("guest");
     };
     document.getElementById("net-join")?.addEventListener("click", () => joinNet());

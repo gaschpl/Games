@@ -8,15 +8,15 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Polowanie" />
   <link rel="manifest" href="manifest.json" />
-  <title>Strzelanina na Łące w Tucznie u Taty i Zosi v138</title>
+  <title>Strzelanina na Łące w Tucznie u Taty i Zosi v139</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🌿%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="css/style.css?v=137" />
+  <link rel="stylesheet" href="css/style.css?v=139" />
 </head>
 <body>
   <canvas id="game" aria-label="Strzelanina na Łące w Tucznie u Taty i Zosi. Dwóch graczy. Gracz 1: WASD, E, spacja. Gracz 2: pad, drążek, A, X albo RT."></canvas>
   <div class="vignette" aria-hidden="true"></div>
   <div class="hud">
-    <p class="title">Strzelanina na Łące w Tucznie u Taty i Zosi v138</p>
+    <p class="title">Strzelanina na Łące w Tucznie u Taty i Zosi v139</p>
     <p class="score" id="score">Gracz 1: 0 gold<br />Gracz 2: 0 gold</p>
     <p class="fps" id="fps">FPS —</p>
     <p class="hint" id="hint">Gracz 1: WASD, E, spacja<br />Gracz 2: pad — drążek, A, X albo RT<br />Dwa jednorożce · gold</p>
@@ -27,6 +27,7 @@
       <button type="button" id="music" class="music" aria-pressed="true">Muzyka: włączona</button>
       <button type="button" id="boars-toggle" class="music" aria-pressed="true">Dziki: włączone</button>
       <button type="button" id="net-log-btn" class="music" aria-pressed="false" title="Komunikaty połączenia">ℹ</button>
+      <button type="button" id="save-game" class="music" title="Zapisz na tym urządzeniu">Zapis</button>
     </div>
   </div>
   <div id="net-log"></div>
@@ -52,6 +53,7 @@
       <button type="button" id="mode-host">Utwórz grę sieciową</button>
       <button type="button" id="mode-join">Dołącz do gry</button>
     </div>
+    <button type="button" id="continue-game" hidden>Kontynuuj zapis</button>
     <div id="setup" hidden>
       <button type="button" id="play">Graj</button>
       <div id="broker-choice" hidden>
@@ -60,7 +62,9 @@
           <button type="button" id="broker-emqx" class="picked">EMQX</button>
           <button type="button" id="broker-hivemq">HiveMQ</button>
           <button type="button" id="broker-webrtc">WebRTC</button>
+          <button type="button" id="broker-local">Ten komputer</button>
         </div>
+        <input id="broker-addr" class="net-code" placeholder="192.168.104.10" hidden />
       </div>
       <p class="menu-title set-title">Ustawienia</p>
       <div class="sets">
@@ -114,7 +118,9 @@
         <button type="button" id="join-broker-emqx" class="picked">EMQX</button>
         <button type="button" id="join-broker-hivemq">HiveMQ</button>
         <button type="button" id="join-broker-webrtc">WebRTC</button>
+        <button type="button" id="join-broker-local">Ten komputer</button>
       </div>
+      <input id="join-broker-addr" class="net-code" placeholder="192.168.104.10" hidden />
       <input id="net-code-input" class="net-code" maxlength="4" placeholder="KOD" autocomplete="off" />
       <button type="button" id="net-join">Dołącz</button>
     </div>
@@ -135,6 +141,6 @@
   <script src="js/plewiska-map.js?v=114"></script>
   <script src="js/sehnde-map.js?v=114"></script>
   <script src="js/poznan-map.js?v=114"></script>
-  <script src="js/game.js?v=138"></script>
+  <script src="js/game.js?v=139"></script>
 </body>
 </html>

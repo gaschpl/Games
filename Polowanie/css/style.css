@@ -91,6 +91,10 @@ canvas:focus {
 #setup[hidden],
 #join-box[hidden],
 #broker-choice[hidden],
+#broker-addr[hidden],
+#join-broker-addr[hidden],
+#continue-game[hidden],
+#save-game[hidden],
 .menu button[hidden] {
   display: none !important;
 }
