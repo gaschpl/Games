@@ -777,9 +777,9 @@ window.addEventListener("error", (event) => {
     };
     return {
       players: actors.map(person),
-      boars: boars.map((b) => [b.x, b.y, b.dir, b.state, b.energy]),
+      boars: boars.map((b) => [b.x, b.y, b.dir, b.state, b.energy, whoIndex(b.rider)]),
       fauna: fauna.map((a) => [a.x, a.y, a.dir, a.state, a.z || 0]),
-      unicorns: unicorns.map((u) => [u.x, u.y, u.dir, u.state]),
+      unicorns: unicorns.map((u) => [u.x, u.y, u.dir, u.state, whoIndex(u.rider)]),
       bullets: bullets.map((b) => [b.x, b.y, b.kind || "gun", whoIndex(b.owner)]),
       cuts: cutWoods,
       gear: gear.map((item) => [
@@ -885,6 +885,9 @@ window.addEventListener("error", (event) => {
         boar.dir = row[2];
         boar.state = row[3];
         boar.energy = row[4];
+        const rider = row[5] >= 0 ? actors[row[5]] : null;
+        boar.rider = rider || null;
+        if (rider && rider.mounted && rider.mountKind === "boar") rider.ride = boar;
         if (!boar.homeX && !boar.homeY) {
           boar.homeX = row[0];
           boar.homeY = row[1];
@@ -910,6 +913,9 @@ window.addEventListener("error", (event) => {
         aimNet(unicorns[i], row[0], row[1]);
         unicorns[i].dir = row[2];
         unicorns[i].state = row[3];
+        const rider = row[4] >= 0 ? actors[row[4]] : null;
+        unicorns[i].rider = rider || null;
+        if (rider && rider.mounted && rider.mountKind !== "boar") rider.ride = unicorns[i];
       }
     }
     if (state.bullets) {
@@ -3544,7 +3550,7 @@ window.addEventListener("error", (event) => {
   }
 
   function activeWeapon() {
-    if (player.netHeld) {
+    if (netRole === "guest" && player.netHeld) {
       if (player.netHeld[weapon] > 0) return weapon;
       for (const kind of ["gun", "net", "sword", "raw", "roast"]) {
         if (player.netHeld[kind] > 0) return kind;
@@ -3713,6 +3719,7 @@ window.addEventListener("error", (event) => {
     item.anim = 0.22;
     item.fromX = item.x;
     item.fromY = item.y;
+    if (netRole !== "guest") player.netHeld = null;
   }
 
   function closestFreeUnicorn() {
@@ -3854,6 +3861,7 @@ window.addEventListener("error", (event) => {
         gear.splice(gear.indexOf(loose.item), 1);
         weapon = loose.item.kind;
         player.weapon = weapon;
+        if (netRole !== "guest") player.netHeld = null;
         playPickup();
         updateScore();
         hintMode = "";
@@ -5713,8 +5721,11 @@ window.addEventListener("error", (event) => {
       ctx.rect(0, 0, view.w, Math.max(0, line));
       ctx.clip();
     }
-    if (mounted && mountKind === "boar" && player.ride) {
-      drawBoar(ctx, player.ride);
+    if (mounted && mountKind === "boar") {
+      const boar = (player.ride && boars.indexOf(player.ride) >= 0)
+        ? player.ride
+        : boars.find((one) => one.rider === player);
+      if (boar) drawBoar(ctx, boar);
       drawSeated(ctx, visual.sprite, player.x, player.y + 8, player.dir);
       drawHeldWeapon(ctx, 0);
     } else if (mounted) {
@@ -5845,14 +5856,14 @@ window.addEventListener("error", (event) => {
     const width = order.length * slot;
     const x0 = Math.round((canvas.width - width) / 2);
     const y0 = canvas.height - Math.round(18 * dpr) - slot;
-    const active = who.netHeld ? who.weapon : (hasKind(who, who.weapon) ? who.weapon : "");
+    const active = netRole === "guest" && who.netHeld ? who.weapon : (hasKind(who, who.weapon) ? who.weapon : "");
     screen.fillStyle = "#14210f";
     screen.fillRect(x0 - border, y0 - border, width + border * 2, slot + border * 2);
     screen.strokeStyle = "#f0e2b8";
     screen.lineWidth = border;
     screen.strokeRect(x0 - border / 2, y0 - border / 2, width + border, slot + border);
     order.forEach((kind, index) => {
-      const count = who.netHeld
+      const count = netRole === "guest" && who.netHeld
         ? (who.netHeld[kind] || 0)
         : (kind === "raw" || kind === "roast"
           ? pocketOf(who)[kind]
@@ -6405,10 +6416,10 @@ window.addEventListener("error", (event) => {
       const title = document.querySelector(".hud .title");
       if (title) {
         title.textContent = want
-          ? "Polowanie v142"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi v142";
+          ? "Polowanie v143"
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi v143";
       }
-      document.title = want ? "Polowanie v142" : "Strzelanina na Łące w Tucznie u Taty i Zosi v142";
+      document.title = want ? "Polowanie v143" : "Strzelanina na Łące w Tucznie u Taty i Zosi v143";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
