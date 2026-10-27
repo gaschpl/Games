@@ -796,25 +796,19 @@ window.addEventListener("error", (event) => {
     state.players.forEach((src, index) => {
       const who = actors[index];
       if (!who || !src) return;
-      const mine = netRole === "guest" && index === netSlot;
-      const gap = Math.hypot((who.x || 0) - src.x, (who.y || 0) - src.y);
-      const placeChanged = who.indoors !== src.indoors || !!who.mounted !== !!src.mounted;
+      who.x = src.x;
+      who.y = src.y;
+      who.dir = src.dir;
+      who.face = src.face;
+      who.moving = src.moving;
+      who.phase = src.phase;
       who.gold = src.gold;
       who.energy = src.energy;
       who.mounted = src.mounted;
       who.mountKind = src.mountKind;
       who.indoors = src.indoors;
       who.weapon = src.weapon;
-      const snap = !mine || placeChanged || gap > 64;
-      if (snap) {
-        who.x = src.x;
-        who.y = src.y;
-        who.dir = src.dir;
-        who.face = src.face;
-        who.moving = src.moving;
-        who.phase = src.phase;
-      }
-      who.slash = mine ? Math.max(who.slash || 0, src.slash || 0) : (src.slash || 0);
+      who.slash = src.slash || 0;
       who.asleep = !!src.asleep;
       who.netHeld = src.held;
     });
@@ -2888,7 +2882,6 @@ window.addEventListener("error", (event) => {
     if (!playerCount) return;
     if (netRole === "guest") {
       applyNetState();
-      predictGuest(dt);
       const me = localActor();
       useActor(me);
       updateCamera();
@@ -3010,30 +3003,6 @@ window.addEventListener("error", (event) => {
   }
 
   let netStamp = "";
-
-  function predictGuest(dt) {
-    const me = localActor();
-    useActor(me);
-    const stick = readStick();
-    const len = Math.hypot(stick.x, stick.y);
-    const ox = player.x;
-    const oy = player.y;
-    if (len > 0.08) {
-      player.face = facingFrom(stick.x, stick.y);
-      let speed = mounted ? tune.run * 1.5 : ((keys.has("shift") || touchRun) ? tune.run : 40);
-      if (playerDepth()) speed *= 0.5;
-      const nx = player.x + (stick.x / len) * speed * dt;
-      const ny = player.y + (stick.y / len) * speed * dt;
-      if (fits(nx, player.y)) player.x = nx;
-      if (fits(player.x, ny)) player.y = ny;
-    }
-    const moved = Math.hypot(player.x - ox, player.y - oy);
-    player.moving = moved > 0.04;
-    if (player.moving) player.phase += (moved / TILE) * 4;
-    if (player.slash > 0) player.slash = Math.max(0, player.slash - dt);
-    stepFacing(dt);
-    keepActor();
-  }
 
   function netUp(obj) {
     if (netBroker === "local") {
@@ -6349,9 +6318,9 @@ window.addEventListener("error", (event) => {
       if (title) {
         title.textContent = (want
           ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v139";
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v140";
       }
-      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v139";
+      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v140";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
