@@ -916,8 +916,14 @@ window.addEventListener("error", (event) => {
       }
     }
     if (state.unicorns) {
-      const n = Math.min(unicorns.length, state.unicorns.length);
-      for (let i = 0; i < n; i++) {
+      while (unicorns.length < state.unicorns.length) {
+        unicorns.push({
+          x: 0, y: 0, state: "free", inside: false, mane: "#b7e7f8", rider: null,
+          dir: "down", homeX: 0, homeY: 0, tx: 0, ty: 0, wander: 0,
+        });
+      }
+      unicorns.length = state.unicorns.length;
+      for (let i = 0; i < unicorns.length; i++) {
         const row = state.unicorns[i];
         const uni = unicorns[i];
         if (netRole === "guest") aimNet(uni, row[0], row[1]);
@@ -2115,6 +2121,11 @@ window.addEventListener("error", (event) => {
     makeGear("net", (spawnTx + 8) * TILE + 4, (spawnTy - 3) * TILE + 8);
     makeGear("sword", (spawnTx + 1) * TILE + 8, (spawnTy + 6) * TILE + 6);
     makeGear("sword", (spawnTx - 5) * TILE + 4, (spawnTy - 4) * TILE + 10);
+    if (netRole === "host") {
+      makeGear("gun", (spawnTx + 6) * TILE + 8, (spawnTy + 4) * TILE + 6);
+      makeGear("net", (spawnTx - 8) * TILE + 6, (spawnTy + 5) * TILE + 8);
+      makeGear("sword", (spawnTx + 4) * TILE + 4, (spawnTy - 5) * TILE + 10);
+    }
     separateGear();
 
     const uniSpots = [
@@ -2164,6 +2175,24 @@ window.addEventListener("error", (event) => {
         wander: 0,
       },
     ];
+    if (netRole === "host") {
+      const uniCTx = spawnTx - 3;
+      const uniCTy = spawnTy - 6;
+      unicorns.push({
+        x: (groundAt(uniCTx, uniCTy) === T.GRASS ? uniCTx : spawnTx - 2) * TILE + TILE / 2,
+        y: (groundAt(uniCTx, uniCTy) === T.GRASS ? uniCTy : spawnTy - 5) * TILE + 12,
+        state: "free",
+        inside: false,
+        mane: "#b7e7f8",
+        rider: null,
+        dir: "down",
+        homeX: 0,
+        homeY: 0,
+        tx: 0,
+        ty: 0,
+        wander: 0,
+      });
+    }
     unicorn = unicorns[0];
     for (const uni of unicorns) {
       for (const item of gear) {
@@ -2963,6 +2992,29 @@ window.addEventListener("error", (event) => {
     return { x: 0, y: 0, keyboard: false };
   }
 
+  const guestHeard = { step: -1, slash: 0, shots: 0, mounted: false };
+
+  function guestEars(me) {
+    if (me.moving) {
+      const step = Math.floor(me.phase);
+      if (step !== guestHeard.step) {
+        guestHeard.step = step;
+        if (step % 2 === 0) {
+          if (me.mounted) playHoof();
+          else playStep(false);
+        }
+      }
+    } else guestHeard.step = Math.floor(me.phase);
+    if ((me.slash || 0) > 0 && guestHeard.slash <= 0) playSwing();
+    guestHeard.slash = me.slash || 0;
+    let shots = 0;
+    for (const bullet of bullets) if (bullet.owner === me) shots += 1;
+    if (shots > guestHeard.shots) playShot();
+    guestHeard.shots = shots;
+    if (me.mounted && !guestHeard.mounted) playMount();
+    guestHeard.mounted = !!me.mounted;
+  }
+
   function update(dt, time) {
     if (!playerCount) return;
     if (netRole === "guest") {
@@ -2974,6 +3026,12 @@ window.addEventListener("error", (event) => {
       keepActor();
       if (!me.indoors) revealAround(me.x, me.y);
       useActor(me);
+      musicTime += dt;
+      if (!sfx.armed) sfx.arm();
+      if (sfx.armed) {
+        musicTick();
+        guestEars(me);
+      }
       syncNet(dt);
       return;
     }
@@ -6440,10 +6498,10 @@ window.addEventListener("error", (event) => {
       const title = document.querySelector(".hud .title");
       if (title) {
         title.textContent = want
-          ? "Polowanie\nv145"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi v145";
+          ? "Polowanie\nv146"
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi v146";
       }
-      document.title = want ? "Polowanie v145" : "Strzelanina na Łące w Tucznie u Taty i Zosi v145";
+      document.title = want ? "Polowanie v146" : "Strzelanina na Łące w Tucznie u Taty i Zosi v146";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
@@ -6851,6 +6909,7 @@ window.addEventListener("error", (event) => {
         return;
       }
       netLog("Łączę z kodem " + netCode + "…");
+      sfx.arm();
       netRole = "guest";
       netSeated = false;
       const boarButton = document.getElementById("boars-toggle");
