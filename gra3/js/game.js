@@ -169,10 +169,10 @@ window.addEventListener("error", (event) => {
     ponds: 3,
     ducks: 2,
     boars: 8,
-    foxes: 5,
-    squirrels: 8,
-    deer: 4,
-    birds: 7,
+    foxes: 30,
+    squirrels: 30,
+    deer: 30,
+    birds: 30,
   };
 
   function readTune() {
@@ -191,10 +191,10 @@ window.addEventListener("error", (event) => {
     tune.ponds = num("set-ponds", 3);
     tune.ducks = num("set-ducks", 2);
     tune.boars = num("set-boars", 8);
-    tune.foxes = num("set-foxes", 5);
-    tune.squirrels = num("set-squirrels", 8);
-    tune.deer = num("set-deer", 4);
-    tune.birds = num("set-birds", 7);
+    tune.foxes = num("set-foxes", 30);
+    tune.squirrels = num("set-squirrels", 30);
+    tune.deer = num("set-deer", 30);
+    tune.birds = num("set-birds", 30);
   }
 
   function energyPct(value, max) {
@@ -2105,7 +2105,7 @@ window.addEventListener("error", (event) => {
     for (const [kind, count] of plan) {
       let made = 0;
       let guard = 0;
-      while (made < count && guard < 400) {
+      while (made < count && guard < 2400) {
         guard += 1;
         const tx = 4 + Math.floor(Math.random() * (COLS - 8));
         const ty = 4 + Math.floor(Math.random() * (ROWS - 8));
@@ -5373,35 +5373,43 @@ window.addEventListener("error", (event) => {
   function drawPhonePocket() {
     const who = actors[0];
     const order = ["gun", "net", "sword", "raw", "roast"];
-    const held = [];
-    for (const kind of order) {
+    const dpr = canvas.width / Math.max(1, window.innerWidth);
+    const slot = Math.round(36 * dpr);
+    const border = Math.max(2, Math.round(3 * dpr));
+    const width = order.length * slot;
+    const x0 = Math.round((canvas.width - width) / 2);
+    const y0 = canvas.height - Math.round(18 * dpr) - slot;
+    const active = hasKind(who, who.weapon) ? who.weapon : "";
+    screen.fillStyle = "#14210f";
+    screen.fillRect(x0 - border, y0 - border, width + border * 2, slot + border * 2);
+    screen.strokeStyle = "#f0e2b8";
+    screen.lineWidth = border;
+    screen.strokeRect(x0 - border / 2, y0 - border / 2, width + border, slot + border);
+    order.forEach((kind, index) => {
       const count = kind === "raw" || kind === "roast"
         ? pocketOf(who)[kind]
         : gear.filter((item) => item.kind === kind && item.holder === who).length;
-      if (count) held.push({ kind, count });
-    }
-    if (!held.length) return;
-    const dpr = canvas.width / Math.max(1, window.innerWidth);
-    const slot = Math.round(34 * dpr);
-    const gap = Math.round(8 * dpr);
-    const width = held.length * slot + (held.length - 1) * gap;
-    const bottom = canvas.height - Math.round(18 * dpr);
-    const x0 = Math.round((canvas.width - width) / 2);
-    const active = hasKind(who, who.weapon) ? who.weapon : "";
-    held.forEach((item, index) => {
-      const x = x0 + index * (slot + gap);
-      const y = bottom - slot;
-      screen.fillStyle = item.kind === active ? "#f2d04a" : "#f0e2b8";
-      screen.fillRect(x - 2, y - 2, slot + 4, slot + 4);
-      screen.fillStyle = "#1a2616";
-      screen.fillRect(x, y, slot, slot);
-      drawPocketIcon(item.kind, x, y, slot);
-      if (item.count > 1) {
+      const x = x0 + index * slot;
+      const chosen = kind === active && count;
+      screen.fillStyle = chosen ? "#f2d04a" : "#1a2616";
+      screen.fillRect(x, y0, slot, slot);
+      if (chosen) {
+        screen.fillStyle = "#6a4e08";
+        const inset = Math.max(3, Math.round(4 * dpr));
+        screen.fillRect(x + inset, y0 + inset, slot - inset * 2, slot - inset * 2);
+      }
+      if (index > 0) {
+        screen.fillStyle = "#f0e2b8";
+        screen.fillRect(x, y0, border, slot);
+      }
+      if (!count) return;
+      drawPocketIcon(kind, x, y0, slot);
+      if (count > 1) {
         screen.fillStyle = "#f2d04a";
         screen.font = "700 " + Math.round(11 * dpr) + "px Segoe UI, sans-serif";
         screen.textAlign = "right";
         screen.textBaseline = "alphabetic";
-        screen.fillText(String(item.count), x + slot - 2, y + slot - 2);
+        screen.fillText(String(count), x + slot - 3, y0 + slot - 3);
       }
     });
   }
