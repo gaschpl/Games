@@ -161,7 +161,7 @@ window.addEventListener("error", (event) => {
   const netConns = [null, null];
   let netSelf = "";
   let netSeated = false;
-  let netBroker = "emqx";
+  let netBroker = "hivemq";
   let pendingSave = null;
   let localSocket = null;
   const cutWoods = [];
@@ -3014,6 +3014,7 @@ window.addEventListener("error", (event) => {
   function takeGuestMsg(msg) {
     if (!msg) return;
     if (msg.type === "hello" && msg.id) {
+      if (kickedIds.has(msg.id)) return;
       let slot = guestIds.indexOf(msg.id);
       if (slot < 0) slot = guestIds.findIndex((id) => !id);
       if (slot < 0) {
@@ -3042,7 +3043,17 @@ window.addEventListener("error", (event) => {
   }
 
   function takeHostMsg(msg) {
-    if (!msg || msg.type !== "state") return;
+    if (!msg) return;
+    if (msg.type === "kick" && msg.id === netSelf) {
+      netKicked = true;
+      netLog("Gospodarz wyrzucił cię z gry.");
+      document.getElementById("net-log")?.classList.add("open");
+      try { if (mqttClient) mqttClient.end(true); } catch (e) {}
+      try { if (localSocket) localSocket.close(); } catch (e) {}
+      try { if (netPeer) netPeer.destroy(); } catch (e) {}
+      return;
+    }
+    if (msg.type !== "state") return;
     if (msg.echo && msg.echo[netSelf] != null) {
       netRtt = Math.max(0, Math.round(performance.now() - msg.echo[netSelf]));
     }
@@ -3066,9 +3077,11 @@ window.addEventListener("error", (event) => {
   }
 
   let netStamp = "";
+  const kickedIds = new Set();
   const netEcho = {};
   let netRtt = -1;
   let netPingAcc = 0;
+  let netKicked = false;
   let netFireBurst = 0;
 
   function netUp(obj) {
@@ -3113,7 +3126,7 @@ window.addEventListener("error", (event) => {
       netDown({ type: "state", who, echo: netEcho, mapId, seed: netSeed, tune, state: packNet() });
       return;
     }
-    if (netRole !== "guest") return;
+    if (netRole !== "guest" || netKicked) return;
     if (!netSeated && netAcc >= 0.3) {
       netAcc = 0;
       netUp({ type: "hello", id: netSelf });
@@ -6391,11 +6404,11 @@ window.addEventListener("error", (event) => {
       if (touch) touch.hidden = !phoneMode || !playerCount;
       const title = document.querySelector(".hud .title");
       if (title) {
-        title.textContent = (want
-          ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v141";
+        title.textContent = want
+          ? "Polowanie v142"
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi v142";
       }
-      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v141";
+      document.title = want ? "Polowanie v142" : "Strzelanina na Łące w Tucznie u Taty i Zosi v142";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
@@ -6696,36 +6709,94 @@ window.addEventListener("error", (event) => {
     });
     document.getElementById("save-game")?.addEventListener("click", () => {
       if (!playerCount || netRole === "guest") return;
-      const data = {
+      const box = document.getElementById("save-pick");
+      if (!box) return;
+      box.hidden = !box.hidden;
+      fillSaveButtons();
+    });
+    document.getElementById("save-pick")?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-slot]");
+      if (!button || !playerCount || netRole === "guest") return;
+      const slot = Number(button.dataset.slot);
+      const saves = readSaves();
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      const name = pad(now.getDate()) + "." + pad(now.getMonth() + 1) + " " + pad(now.getHours()) + ":" + pad(now.getMinutes());
+      saves[slot] = {
+        name,
         mapId,
         seed: netSeed,
         tune,
         state: packNet(),
         mode: netRole === "host" ? "host" : (playerCount === 2 ? "split" : "solo"),
       };
-      localStorage.setItem("polowanie-save", JSON.stringify(data));
-      const cont = document.getElementById("continue-game");
-      if (cont) cont.hidden = false;
-      netLog("Zapisane na tym urządzeniu.");
+      while (saves.length < 3) saves.push(null);
+      saves.length = 3;
+      localStorage.setItem("polowanie-saves", JSON.stringify(saves));
+      document.getElementById("save-pick").hidden = true;
+      fillContinue();
+      netLog("Zapis " + (slot + 1) + ": " + name);
       document.getElementById("net-log")?.classList.add("open");
     });
-    const cont = document.getElementById("continue-game");
-    if (cont) cont.hidden = !localStorage.getItem("polowanie-save");
-    cont?.addEventListener("click", () => {
-      try { pendingSave = JSON.parse(localStorage.getItem("polowanie-save") || ""); }
-      catch (e) { pendingSave = null; }
-      if (!pendingSave) return;
-      if (pendingSave.mapId) pickMap(pendingSave.mapId);
-      const mode = pendingSave.mode === "host" ? "host" : pendingSave.mode === "split" ? "split" : "solo";
-      pickMode(mode);
-      const menu = document.getElementById("menu");
-      if (mode === "host") {
-        if (!openRoom()) return;
-      } else netRole = "";
-      if (menu) menu.hidden = true;
-      showLoad(0);
-      choosePlayers(mode === "solo" ? 1 : 2).catch(failStart);
-    });
+    const readSaves = () => {
+      try {
+        const raw = JSON.parse(localStorage.getItem("polowanie-saves") || "null");
+        if (Array.isArray(raw)) return raw;
+      } catch (e) {}
+      try {
+        const old = JSON.parse(localStorage.getItem("polowanie-save") || "null");
+        if (old && old.seed) return [Object.assign({ name: "wcześniejszy" }, old), null, null];
+      } catch (e) {}
+      return [null, null, null];
+    };
+    const fillSaveButtons = () => {
+      const saves = readSaves();
+      document.querySelectorAll("#save-pick [data-slot]").forEach((button) => {
+        const item = saves[Number(button.dataset.slot)];
+        button.textContent = (Number(button.dataset.slot) + 1) + (item && item.name ? " " + item.name : " pusty");
+      });
+    };
+    const fillContinue = () => {
+      const box = document.getElementById("continue-slots");
+      if (!box) return;
+      box.innerHTML = "";
+      readSaves().forEach((item, index) => {
+        if (!item || !item.seed) return;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Kontynuuj " + (item.name || (index + 1));
+        button.addEventListener("click", () => {
+          pendingSave = item;
+          if (item.mapId) pickMap(item.mapId);
+          const mode = item.mode === "host" ? "host" : item.mode === "split" ? "split" : "solo";
+          pickMode(mode);
+          netLog("Wybierz serwer i naciśnij Graj. Zapis nie trzyma starego serwera.");
+          document.getElementById("net-log")?.classList.add("open");
+        });
+        box.appendChild(button);
+      });
+    };
+    fillContinue();
+    const refreshKicks = () => {
+      const one = document.getElementById("kick-2");
+      const two = document.getElementById("kick-3");
+      const host = netRole === "host";
+      if (one) one.hidden = !(host && guestIds[0]);
+      if (two) two.hidden = !(host && guestIds[1]);
+    };
+    const kickSlot = (index) => {
+      const id = guestIds[index];
+      if (!id || netRole !== "host") return;
+      kickedIds.add(id);
+      guestIds[index] = null;
+      actors[index + 1].asleep = true;
+      netDown({ type: "kick", id });
+      refreshKicks();
+      netLog("Wyrzucono gracza " + (index + 2) + ".");
+    };
+    document.getElementById("kick-2")?.addEventListener("click", () => kickSlot(0));
+    document.getElementById("kick-3")?.addEventListener("click", () => kickSlot(1));
+    setInterval(refreshKicks, 1000);
     document.getElementById("net-log-btn")?.addEventListener("click", () => {
       const box = document.getElementById("net-log");
       const button = document.getElementById("net-log-btn");
@@ -6981,7 +7052,11 @@ window.addEventListener("error", (event) => {
     if (time - loop.fpsAt >= 500) {
       const fps = Math.round(loop.frames * 1000 / (time - loop.fpsAt));
       const el = document.getElementById("fps");
-      if (el) el.textContent = netRole === "guest" && netRtt >= 0 ? "FPS " + fps + " · " + netRtt + " ms" : "FPS " + fps;
+      if (el) {
+        el.textContent = netRole === "guest" && netRtt >= 0
+          ? "FPS " + fps + "\n" + netRtt + " ms"
+          : "FPS " + fps;
+      }
       loop.frames = 0;
       loop.fpsAt = time;
     }

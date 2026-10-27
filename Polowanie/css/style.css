@@ -67,6 +67,7 @@ canvas:focus {
   margin: 4px 0 0;
   font-size: 13px;
   color: #c8d7b4;
+  white-space: pre-line;
 }
 
 .menu {
@@ -93,10 +94,17 @@ canvas:focus {
 #broker-choice[hidden],
 #broker-addr[hidden],
 #join-broker-addr[hidden],
-#continue-game[hidden],
-#save-game[hidden],
+#kick-2[hidden],
+#kick-3[hidden],
+#save-pick[hidden],
 .menu button[hidden] {
   display: none !important;
+}
+
+#save-pick {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 .loading {
@@ -459,12 +467,14 @@ body.phone .hud {
   padding: 4px 6px 6px;
   border-width: 2px;
   box-shadow: 2px 2px 0 #14210f;
+  overflow: visible;
 }
 
 body.phone .title {
   margin: 0 0 2px;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.1;
+  white-space: nowrap;
 }
 
 body.phone .score {
@@ -474,6 +484,7 @@ body.phone .score {
 body.phone .fps {
   margin: 0;
   font-size: 11px;
+  white-space: pre-line;
 }
 
 body.phone .scale {
