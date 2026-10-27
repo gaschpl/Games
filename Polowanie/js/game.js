@@ -6217,11 +6217,11 @@ window.addEventListener("error", (event) => {
       if (touch) touch.hidden = !phoneMode || !playerCount;
       const title = document.querySelector(".hud .title");
       if (title) {
-        title.textContent = want
+        title.textContent = (want
           ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi";
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v134";
       }
-      document.title = want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi";
+      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v134";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
@@ -6459,10 +6459,13 @@ window.addEventListener("error", (event) => {
       arm();
       const key = event.key.toLowerCase();
       if (!playerCount) {
-        if (key === "1") pickMode("solo");
-        if (key === "2" && !wantsPhone()) pickMode("split");
-        if (key === "3") pickMode("host");
-        if (key === "4") pickMode("join");
+        const typing = event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA");
+        if (!typing) {
+          if (key === "1") pickMode("solo");
+          if (key === "2" && !wantsPhone()) pickMode("split");
+          if (key === "3") pickMode("host");
+          if (key === "4") pickMode("join");
+        }
         return;
       }
       if (netRole === "guest") {
