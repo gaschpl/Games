@@ -752,6 +752,11 @@ window.addEventListener("error", (event) => {
       fauna: fauna.map((a) => [a.x, a.y, a.dir, a.state, a.z || 0]),
       unicorns: unicorns.map((u) => [u.x, u.y, u.dir, u.state]),
       bullets: bullets.map((b) => [b.x, b.y, b.kind || "gun", b.owner === actors[1] ? 1 : 0]),
+      gear: gear.map((item) => [
+        item.x, item.y, item.held ? 1 : 0,
+        item.holder === actors[1] ? 1 : item.holder === actors[0] ? 0 : -1,
+        item.kind,
+      ]),
     };
   }
 
@@ -784,6 +789,22 @@ window.addEventListener("error", (event) => {
         });
       }
     };
+    if (state.gear) {
+      while (gear.length > state.gear.length) gear.pop();
+      state.gear.forEach((row, i) => {
+        let item = gear[i];
+        if (!item) {
+          item = { kind: row[4], x: row[0], y: row[1], held: false, anim: 0, fromX: 0, fromY: 0, holder: null };
+          gear.push(item);
+        }
+        item.kind = row[4];
+        item.x = row[0];
+        item.y = row[1];
+        item.held = row[2] === 1;
+        item.holder = row[3] === 0 ? actors[0] : row[3] === 1 ? actors[1] : null;
+        item.anim = 0;
+      });
+    }
     if (state.boars) copy(boars, state.boars, ["x", "y", "dir", "state", "energy"]);
     if (state.fauna) copy(fauna, state.fauna, ["x", "y", "dir", "state", "z"]);
     if (state.unicorns) copy(unicorns, state.unicorns, ["x", "y", "dir", "state"]);
@@ -5217,7 +5238,9 @@ window.addEventListener("error", (event) => {
       drawMeat(ctx, hand.x, hand.y, active, "boar");
       return;
     }
-    const item = itemOf(player, active);
+    const item = itemOf(player, active) || (player.netHeld && player.netHeld[active] > 0
+      ? { anim: 0, fromX: player.x, fromY: player.y }
+      : null);
     if (!item) return;
     const pos = heldItemPos(item, bob);
     if (active === "net") drawNet(ctx, pos.x, pos.y, player.dir, player.flash > 0);
