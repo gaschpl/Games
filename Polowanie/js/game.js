@@ -6100,8 +6100,10 @@ window.addEventListener("error", (event) => {
 
     function syncPhone() {
       const want = wantsPhone();
-      const portrait = want && window.innerHeight > window.innerWidth;
-      phoneMode = want && !portrait;
+      const wide = window.innerWidth >= window.innerHeight;
+      const landscape = window.matchMedia("(orientation: landscape)").matches || wide;
+      const portrait = want && !landscape;
+      phoneMode = want && landscape;
       document.body.classList.toggle("phone", want);
       const turn = document.getElementById("turn");
       if (turn) turn.hidden = !portrait;
@@ -6273,6 +6275,9 @@ window.addEventListener("error", (event) => {
     window.addEventListener("pointerdown", () => enterPhoneFullscreen());
     syncPhone();
     window.addEventListener("resize", syncPhone);
+    window.addEventListener("orientationchange", syncPhone);
+    const landscapeQuery = window.matchMedia("(orientation: landscape)");
+    if (landscapeQuery.addEventListener) landscapeQuery.addEventListener("change", syncPhone);
 
     window.addEventListener("keydown", (event) => {
       arm();

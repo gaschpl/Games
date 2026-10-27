@@ -284,7 +284,13 @@ canvas:focus {
 
 #touch[hidden],
 #turn[hidden] {
-  display: none;
+  display: none !important;
+}
+
+@media (orientation: landscape) {
+  #turn {
+    display: none !important;
+  }
 }
 
 #touch {
