@@ -6317,6 +6317,31 @@ window.addEventListener("error", (event) => {
       netLog("Start się nie udał: " + (error && error.message ? error.message : "błąd"));
       document.getElementById("net-log")?.classList.add("open");
     };
+    const peerOptions = {
+      config: {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          {
+            urls: [
+              "turn:openrelay.metered.ca:80",
+              "turn:openrelay.metered.ca:443",
+              "turns:openrelay.metered.ca:443",
+            ],
+            username: "openrelayproject",
+            credential: "openrelayproject",
+          },
+        ],
+      },
+    };
+    const explainPeer = (err) => {
+      const type = (err && (err.type || err.message)) || "błąd";
+      if (type === "peer-unavailable") return "Nie ma takiego pokoju.";
+      if (type === "unavailable-id") return "Kod zajęty. Utwórz pokój jeszcze raz.";
+      if (type === "network" || type === "server-error" || type === "socket-error" || type === "socket-closed") return "Brak serwera PeerJS (" + type + ").";
+      if (type === "webrtc") return "WebRTC nie przeszło. Zostaw ekran włączony i spróbuj jeszcze raz.";
+      return "Błąd sieci: " + type;
+    };
     const openRoom = () => {
       if (typeof Peer !== "function") {
         netLog("Brak PeerJS. Oba urządzenia muszą mieć internet.");
@@ -6327,7 +6352,7 @@ window.addEventListener("error", (event) => {
       netCode = "";
       for (let i = 0; i < 4; i++) netCode += alphabet[Math.floor(Math.random() * alphabet.length)];
       if (netPeer) netPeer.destroy();
-      netPeer = new Peer(netCode);
+      netPeer = new Peer(netCode, peerOptions);
       netPeer.on("open", () => netLog("Kod pokoju: " + netCode));
       netPeer.on("connection", (conn) => {
         let slot = netConns.findIndex((open) => open && open.peer === conn.peer);
@@ -6343,9 +6368,8 @@ window.addEventListener("error", (event) => {
         conn.on("open", () => netLog("Dołączył gracz " + (slot + 2) + ": " + (conn.peer || "")));
         conn.on("close", () => netLog("Gracz " + (slot + 2) + " rozłączony."));
       });
-      netPeer.on("error", () => {
-        if (netPeer && netPeer.open) return;
-        netLog("Nie udało się utworzyć pokoju. Sprawdź internet.");
+      netPeer.on("error", (err) => {
+        netLog(explainPeer(err));
         document.getElementById("net-log")?.classList.add("open");
       });
       netRole = "host";
@@ -6385,15 +6409,19 @@ window.addEventListener("error", (event) => {
       }
       netLog("Łączę z kodem " + netCode + "…");
       if (netPeer) netPeer.destroy();
-      netPeer = new Peer();
+      netPeer = new Peer(peerOptions);
       netPeer.on("open", () => {
-        const conn = netPeer.connect(netCode);
+        const conn = netPeer.connect(netCode, { reliable: true });
         takeNetConn(conn);
         conn.on("open", () => netLog("Połączono."));
         conn.on("close", () => netLog("Połączenie przerwane. Wróć do gry, żeby połączyć ponownie."));
+        conn.on("error", (err) => {
+          netLog(explainPeer(err));
+          document.getElementById("net-log")?.classList.add("open");
+        });
       });
-      netPeer.on("error", () => {
-        netLog("Nie ma takiego pokoju albo brak internetu.");
+      netPeer.on("error", (err) => {
+        netLog(explainPeer(err));
         document.getElementById("net-log")?.classList.add("open");
       });
     };
