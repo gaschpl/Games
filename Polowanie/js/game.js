@@ -317,13 +317,33 @@ window.addEventListener("error", (event) => {
     return 440 * 2 ** ((midi - 69) / 12);
   }
 
+  const noiseBag = [];
+  let heardNoises = null;
+
+  function noteNoise(kind) {
+    if (netRole !== "host") return;
+    const index = actors.indexOf(player);
+    if (noiseBag.length < 16) noiseBag.push([kind, index < 0 ? 0 : index]);
+  }
+
+  function audible() {
+    if (netRole !== "host" && netRole !== "guest") return true;
+    const me = localActor();
+    if (!me || player === me) return true;
+    return Math.hypot(player.x - me.x, player.y - me.y) <= 20 * TILE;
+  }
+
   function playStep(onDirt) {
+    noteNoise(onDirt ? "stepd" : "step");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     tone(ctx, ctx.currentTime, onDirt ? 196 : 262, 0.045, "triangle", 0.035);
   }
 
   function playShot() {
+    noteNoise("shot");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     const t = ctx.currentTime;
@@ -342,6 +362,8 @@ window.addEventListener("error", (event) => {
   }
 
   function playPickup() {
+    noteNoise("pick");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     const t = ctx.currentTime;
@@ -350,12 +372,16 @@ window.addEventListener("error", (event) => {
   }
 
   function playHit() {
+    noteNoise("hit");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     tone(ctx, ctx.currentTime, noteFreq("B3"), 0.12, "triangle", 0.05);
   }
 
   function playSwing() {
+    noteNoise("swing");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     const t = ctx.currentTime;
@@ -364,6 +390,8 @@ window.addEventListener("error", (event) => {
   }
 
   function playCatch() {
+    noteNoise("catch");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     const t = ctx.currentTime;
@@ -372,6 +400,8 @@ window.addEventListener("error", (event) => {
   }
 
   function playRelease() {
+    noteNoise("release");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     const t = ctx.currentTime;
@@ -380,6 +410,8 @@ window.addEventListener("error", (event) => {
   }
 
   function playMount() {
+    noteNoise("mount");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     const t = ctx.currentTime;
@@ -388,6 +420,8 @@ window.addEventListener("error", (event) => {
   }
 
   function playHoof() {
+    noteNoise("hoof");
+    if (!audible()) return;
     const ctx = sfx.arm();
     if (!ctx) return;
     tone(ctx, ctx.currentTime, 146, 0.04, "triangle", 0.04);
@@ -782,6 +816,7 @@ window.addEventListener("error", (event) => {
       unicorns: unicorns.map((u) => [u.x, u.y, u.dir, u.state, whoIndex(u.rider)]),
       bullets: bullets.map((b) => [b.x, b.y, b.kind || "gun", whoIndex(b.owner)]),
       cuts: cutWoods,
+      noises: noiseBag.splice(0, noiseBag.length),
       gear: gear.map((item) => [
         item.x, item.y, item.held ? 1 : 0,
         whoIndex(item.holder),
@@ -964,6 +999,28 @@ window.addEventListener("error", (event) => {
         appliedCuts.add(key);
         dropWood(row[0], row[1]);
       }
+    }
+    if (netRole === "guest" && state.noises && state.noises !== heardNoises) {
+      heardNoises = state.noises;
+      const me = localActor();
+      const kept = player;
+      for (const row of state.noises) {
+        const who = actors[row[1]];
+        if (!who || !me || who === me) continue;
+        if (Math.hypot(who.x - me.x, who.y - me.y) > 20 * TILE) continue;
+        player = who;
+        if (row[0] === "step") playStep(false);
+        else if (row[0] === "stepd") playStep(true);
+        else if (row[0] === "shot") playShot();
+        else if (row[0] === "pick") playPickup();
+        else if (row[0] === "hit") playHit();
+        else if (row[0] === "swing") playSwing();
+        else if (row[0] === "catch") playCatch();
+        else if (row[0] === "release") playRelease();
+        else if (row[0] === "mount") playMount();
+        else if (row[0] === "hoof") playHoof();
+      }
+      player = kept;
     }
   }
 
@@ -6498,10 +6555,10 @@ window.addEventListener("error", (event) => {
       const title = document.querySelector(".hud .title");
       if (title) {
         title.textContent = want
-          ? "Polowanie\nv146"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi v146";
+          ? "Polowanie\nv147"
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi v147";
       }
-      document.title = want ? "Polowanie v146" : "Strzelanina na Łące w Tucznie u Taty i Zosi v146";
+      document.title = want ? "Polowanie v147" : "Strzelanina na Łące w Tucznie u Taty i Zosi v147";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
