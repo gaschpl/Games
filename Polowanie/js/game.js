@@ -173,6 +173,7 @@ window.addEventListener("error", (event) => {
   let ponds = [];
   let ducks = [];
   let boars = [];
+  let cutWoods = [];
   let fauna = [];
   let butterflyCap = 0;
   let butterflyTimer = 0;
@@ -450,7 +451,9 @@ window.addEventListener("error", (event) => {
     player.shootCooldown = shootCooldown;
     player.target = target;
     player.outsideSpot = outsideSpot;
-    const next = mounted ? (mountKind === "boar" ? player.ride : unicorn) : null;
+    const next = !mounted ? null
+      : mountKind === "boar" ? player.ride
+      : (player.ride && unicorns.indexOf(player.ride) >= 0 ? player.ride : unicorn);
     if (player.ride && player.ride !== next && player.ride.rider === player) player.ride.rider = null;
     player.ride = next;
     if (player.ride) player.ride.rider = player;
@@ -758,8 +761,9 @@ window.addEventListener("error", (event) => {
     const person = (who) => ({
       x: who.x, y: who.y, dir: who.dir, face: who.face,
       gold: who.gold, energy: who.energy,
-      mounted: who.mounted, mountKind: who.mountKind || "",
       indoors: who.indoors, weapon: who.weapon,
+      mounted: who.mounted, mountKind: who.mountKind || "",
+      ride: who.mountKind === "boar" ? boars.indexOf(who.ride) : unicorns.indexOf(who.ride),
       moving: who.moving, phase: who.phase, slash: who.slash || 0,
       asleep: !!who.asleep,
       held: heldCounts(who),
@@ -779,6 +783,7 @@ window.addEventListener("error", (event) => {
         whoIndex(item.holder),
         item.kind,
       ]),
+      cutWoods,
     };
   }
 
@@ -796,6 +801,10 @@ window.addEventListener("error", (event) => {
       who.energy = src.energy;
       who.mounted = src.mounted;
       who.mountKind = src.mountKind;
+      if (!src.mounted) who.ride = null;
+      else if (src.mountKind === "boar") who.ride = boars[src.ride] || null;
+      else who.ride = unicorns[src.ride] || null;
+      if (who.ride) who.ride.rider = who;
       who.indoors = src.indoors;
       who.weapon = src.weapon;
       who.moving = src.moving;
@@ -827,6 +836,27 @@ window.addEventListener("error", (event) => {
         item.holder = row[3] >= 0 ? actors[row[3]] || null : null;
         item.anim = 0;
       });
+    }
+    if (state.cutWoods && state.cutWoods.length) {
+      let changed = false;
+      for (const spot of state.cutWoods) {
+        const wx = spot[0];
+        const wy = spot[1];
+        const wood = woods.findIndex((tree) => Math.hypot(tree.x - wx, tree.y - wy) < 8);
+        if (wood >= 0) {
+          eraseWood(woods[wood]);
+          woods.splice(wood, 1);
+          changed = true;
+          continue;
+        }
+        const prop = props.findIndex((item) => (item.kind === "tree" || item.kind === "bush") && Math.hypot(item.x - wx, item.y - wy) < 8);
+        if (prop >= 0) {
+          props.splice(prop, 1);
+          changed = true;
+        }
+      }
+      if (changed) buildWoodGrid();
+      state.cutWoods.length = 0;
     }
     if (state.boars) {
       while (boars.length < state.boars.length) {
@@ -2849,7 +2879,6 @@ window.addEventListener("error", (event) => {
       const me = localActor();
       useActor(me);
       updateCamera();
-      keepActor();
       if (!me.indoors) revealAround(me.x, me.y);
       useActor(me);
       syncNet(dt);
@@ -2928,7 +2957,20 @@ window.addEventListener("error", (event) => {
         netLog("Pokój pełny. Mogą dołączyć dwie osoby.");
         return;
       }
-      if (!guestIds[slot]) netLog("Dołączył gracz " + (slot + 2));
+      if (!guestIds[slot]) {
+        netLog("Dołączył gracz " + (slot + 2));
+        const who = actors[slot + 1];
+        const side = slot === 0 ? 28 : -28;
+        who.x = actors[0].x + side;
+        who.y = actors[0].y + 8;
+        who.outsideSpot = { x: who.x, y: who.y };
+        who.mounted = false;
+        who.mountKind = "";
+        if (who.ride && who.ride.rider === who) who.ride.rider = null;
+        who.ride = null;
+        who.target = null;
+        who.indoors = false;
+      }
       guestIds[slot] = msg.id;
       actors[slot + 1].asleep = false;
       return;
@@ -4159,10 +4201,14 @@ window.addEventListener("error", (event) => {
     }
     if (choppedWood) {
       const index = woods.indexOf(choppedWood);
-      if (index >= 0) woods.splice(index, 1);
+      if (index >= 0) {
+        cutWoods.push([choppedWood.x, choppedWood.y]);
+        woods.splice(index, 1);
+      }
       buildWoodGrid();
       playHit();
     } else if (chopped >= 0) {
+      cutWoods.push([props[chopped].x, props[chopped].y]);
       props.splice(chopped, 1);
       playHit();
     }
@@ -6247,9 +6293,9 @@ window.addEventListener("error", (event) => {
       if (title) {
         title.textContent = (want
           ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v136";
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v137";
       }
-      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v136";
+      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v137";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
