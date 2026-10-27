@@ -156,8 +156,10 @@ window.addEventListener("error", (event) => {
   let touchRun = false;
   const touchStick = { x: 0, y: 0 };
   let netPeer = null;
-  let netConn = null;
-  const netConns = [null, null];
+  let mqttClient = null;
+  let netSelf = "";
+  let netSeated = false;
+  const guestIds = [null, null];
   const netIns = [null, { x: 0, y: 0, run: false, fire: false, act: false, weapon: false }, { x: 0, y: 0, run: false, fire: false, act: false, weapon: false }];
   let netRole = "";
   let startGuestGame = function () {};
@@ -2916,49 +2918,72 @@ window.addEventListener("error", (event) => {
     box.scrollTop = box.scrollHeight;
   }
 
-  function takeNetConn(conn, slot) {
-    netConn = conn;
-    conn.on("data", (msg) => {
-      if (!msg) return;
-      if (msg.type === "input" && slot) {
-        const input = netIns[slot];
-        input.x = msg.x || 0;
-        input.y = msg.y || 0;
-        input.run = !!msg.run;
-        if (msg.fire) input.fire = true;
-        if (msg.act) input.act = true;
-        if (msg.weapon) input.weapon = true;
+  function takeGuestMsg(msg) {
+    if (!msg) return;
+    if (msg.type === "hello" && msg.id) {
+      let slot = guestIds.indexOf(msg.id);
+      if (slot < 0) slot = guestIds.findIndex((id) => !id);
+      if (slot < 0) {
+        netLog("Pokój pełny. Mogą dołączyć dwie osoby.");
+        return;
       }
-      if (msg.type === "state") {
-        if (msg.slot) netSlot = msg.slot;
-        if (msg.state && msg.state.players) netState = msg.state;
-        if (!playerCount && msg.seed) {
-          netRole = "guest";
-          netSeed = msg.seed;
-          netTune = msg.tune || null;
-          if (msg.mapId) mapId = msg.mapId;
-          netLog("Wchodzę jako gracz " + (netSlot + 1) + ".");
-          startGuestGame();
-        }
-      }
-    });
+      if (!guestIds[slot]) netLog("Dołączył gracz " + (slot + 2));
+      guestIds[slot] = msg.id;
+      actors[slot + 1].asleep = false;
+      return;
+    }
+    if (msg.type !== "input" || !msg.id) return;
+    const slot = guestIds.indexOf(msg.id);
+    if (slot < 0) return;
+    const input = netIns[slot + 1];
+    input.x = msg.x || 0;
+    input.y = msg.y || 0;
+    input.run = !!msg.run;
+    if (msg.fire) input.fire = true;
+    if (msg.act) input.act = true;
+    if (msg.weapon) input.weapon = true;
+  }
+
+  function takeHostMsg(msg) {
+    if (!msg || msg.type !== "state") return;
+    if (msg.who && msg.who[netSelf]) {
+      netSlot = msg.who[netSelf];
+      netSeated = true;
+    }
+    if (msg.state && msg.state.players) netState = msg.state;
+    if (!playerCount && msg.seed) {
+      netRole = "guest";
+      netSeed = msg.seed;
+      netTune = msg.tune || null;
+      if (msg.mapId) mapId = msg.mapId;
+      netLog("Wchodzę jako gracz " + (netSlot + 1) + ".");
+      startGuestGame();
+    }
   }
 
   function syncNet(dt) {
     netAcc += dt;
     if (netAcc < 0.1) return;
     netAcc = 0;
+    if (!mqttClient || !mqttClient.connected) return;
     if (netRole === "host") {
-      netConns.forEach((conn, index) => {
-        if (!conn || !conn.open) return;
-        conn.send({ type: "state", slot: index + 1, mapId, seed: netSeed, tune, state: packNet() });
+      const who = {};
+      guestIds.forEach((id, index) => {
+        if (id) who[id] = index + 1;
       });
+      mqttClient.publish("polowanie/" + netCode + "/down", JSON.stringify({
+        type: "state", who, mapId, seed: netSeed, tune, state: packNet(),
+      }));
       return;
     }
-    if (netRole !== "guest" || !netConn || !netConn.open) return;
+    if (netRole !== "guest") return;
+    if (!netSeated) {
+      mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify({ type: "hello", id: netSelf }));
+    }
     const stick = readStick();
     const body = {
       type: "input",
+      id: netSelf,
       x: stick.x,
       y: stick.y,
       run: keys.has("shift") || touchRun,
@@ -2969,7 +2994,7 @@ window.addEventListener("error", (event) => {
     netPulse.fire = false;
     netPulse.act = false;
     netPulse.weapon = false;
-    netConn.send(body);
+    mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify(body));
   }
 
   function applyPad() {
@@ -6219,9 +6244,9 @@ window.addEventListener("error", (event) => {
       if (title) {
         title.textContent = (want
           ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v134";
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v135";
       }
-      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v134";
+      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v135";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
@@ -6336,65 +6361,69 @@ window.addEventListener("error", (event) => {
       netLog("Start się nie udał: " + (error && error.message ? error.message : "błąd"));
       document.getElementById("net-log")?.classList.add("open");
     };
-    const peerOptions = {
-      config: {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-          {
-            urls: [
-              "turn:openrelay.metered.ca:80",
-              "turn:openrelay.metered.ca:443",
-              "turns:openrelay.metered.ca:443",
-            ],
-            username: "openrelayproject",
-            credential: "openrelayproject",
-          },
-        ],
-      },
-    };
-    const explainPeer = (err) => {
-      const type = (err && (err.type || err.message)) || "błąd";
-      if (type === "peer-unavailable") return "Nie ma takiego pokoju.";
-      if (type === "unavailable-id") return "Kod zajęty. Utwórz pokój jeszcze raz.";
-      if (type === "network" || type === "server-error" || type === "socket-error" || type === "socket-closed") return "Brak serwera PeerJS (" + type + ").";
-      if (type === "webrtc") return "WebRTC nie przeszło. Zostaw ekran włączony i spróbuj jeszcze raz.";
-      return "Błąd sieci: " + type;
-    };
-    const openRoom = () => {
-      if (typeof Peer !== "function") {
-        netLog("Brak PeerJS. Oba urządzenia muszą mieć internet.");
+    const startRoom = (role) => {
+      if (typeof mqtt === "undefined") {
+        netLog("Brak połączenia sieciowego. Oba urządzenia muszą mieć internet.");
         document.getElementById("net-log")?.classList.add("open");
         return false;
       }
+      if (!netSelf) netSelf = "p" + Math.random().toString(36).slice(2, 10);
+      if (mqttClient) {
+        try { mqttClient.end(true); } catch (e) {}
+        mqttClient = null;
+      }
+      const brokers = [
+        "wss://broker.emqx.io:8084/mqtt",
+        "wss://broker.hivemq.com:8884/mqtt",
+      ];
+      let brokerAt = 0;
+      const openBroker = () => {
+        mqttClient = mqtt.connect(brokers[brokerAt], {
+          clientId: netSelf + String(brokerAt),
+          clean: true,
+          reconnectPeriod: 2000,
+          connectTimeout: 8000,
+        });
+        let opened = false;
+        mqttClient.on("connect", () => {
+          opened = true;
+          mqttClient.subscribe(role === "host" ? "polowanie/" + netCode + "/up" : "polowanie/" + netCode + "/down");
+          if (role === "host") netLog("Kod pokoju: " + netCode);
+          else {
+            netLog("Połączono. Czekam na grę.");
+            mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify({ type: "hello", id: netSelf }));
+          }
+        });
+        mqttClient.on("message", (_topic, payload) => {
+          let msg = null;
+          try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+          if (role === "host") takeGuestMsg(msg);
+          else takeHostMsg(msg);
+        });
+        mqttClient.on("error", () => {
+          if (opened) return;
+          try { mqttClient.end(true); } catch (e) {}
+          brokerAt += 1;
+          if (brokerAt < brokers.length) openBroker();
+          else {
+            netLog("Nie udało się połączyć z serwerem gry.");
+            document.getElementById("net-log")?.classList.add("open");
+          }
+        });
+      };
+      openBroker();
+      return true;
+    };
+    const openRoom = () => {
       const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
       netCode = "";
       for (let i = 0; i < 4; i++) netCode += alphabet[Math.floor(Math.random() * alphabet.length)];
-      if (netPeer) netPeer.destroy();
-      netPeer = new Peer(netCode, peerOptions);
-      netPeer.on("open", () => netLog("Kod pokoju: " + netCode));
-      netPeer.on("connection", (conn) => {
-        let slot = netConns.findIndex((open) => open && open.peer === conn.peer);
-        if (slot < 0) slot = netConns.findIndex((open) => !open || !open.open);
-        if (slot < 0) {
-          netLog("Pokój pełny. Mogą dołączyć dwie osoby.");
-          conn.close();
-          return;
-        }
-        netConns[slot] = conn;
-        actors[slot + 1].asleep = false;
-        takeNetConn(conn, slot + 1);
-        conn.on("open", () => netLog("Dołączył gracz " + (slot + 2) + ": " + (conn.peer || "")));
-        conn.on("close", () => netLog("Gracz " + (slot + 2) + " rozłączony."));
-      });
-      netPeer.on("error", (err) => {
-        netLog(explainPeer(err));
-        document.getElementById("net-log")?.classList.add("open");
-      });
+      guestIds[0] = null;
+      guestIds[1] = null;
       netRole = "host";
       netSeed = Math.floor(Math.random() * 1000000000);
       readTune();
-      return true;
+      return startRoom("host");
     };
     document.getElementById("play")?.addEventListener("click", () => {
       const menu = document.getElementById("menu");
@@ -6421,33 +6450,15 @@ window.addEventListener("error", (event) => {
         netLog("Wpisz kod pokoju.");
         return;
       }
-      if (typeof Peer !== "function") {
-        netLog("Brak PeerJS. Oba urządzenia muszą mieć internet.");
-        document.getElementById("net-log")?.classList.add("open");
-        return;
-      }
       netLog("Łączę z kodem " + netCode + "…");
-      if (netPeer) netPeer.destroy();
-      netPeer = new Peer(peerOptions);
-      netPeer.on("open", () => {
-        const conn = netPeer.connect(netCode, { reliable: true });
-        takeNetConn(conn);
-        conn.on("open", () => netLog("Połączono."));
-        conn.on("close", () => netLog("Połączenie przerwane. Wróć do gry, żeby połączyć ponownie."));
-        conn.on("error", (err) => {
-          netLog(explainPeer(err));
-          document.getElementById("net-log")?.classList.add("open");
-        });
-      });
-      netPeer.on("error", (err) => {
-        netLog(explainPeer(err));
-        document.getElementById("net-log")?.classList.add("open");
-      });
+      netRole = "guest";
+      netSeated = false;
+      startRoom("guest");
     };
     document.getElementById("net-join")?.addEventListener("click", () => joinNet());
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState !== "visible") return;
-      if (netRole === "guest" && netCode && (!netConn || !netConn.open)) joinNet();
+      if (netRole === "guest" && netCode && (!mqttClient || !mqttClient.connected)) joinNet();
     });
     syncPhone();
     window.addEventListener("resize", syncPhone);
