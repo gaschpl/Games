@@ -87,8 +87,11 @@ canvas:focus {
   text-align: center;
 }
 
-.menu[hidden] {
-  display: none;
+.menu[hidden],
+#setup[hidden],
+#join-box[hidden],
+.menu button[hidden] {
+  display: none !important;
 }
 
 .loading {
