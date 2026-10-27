@@ -790,25 +790,58 @@ window.addEventListener("error", (event) => {
     };
   }
 
+  function aimNet(obj, x, y) {
+    if (obj._sx === x && obj._sy === y) return;
+    obj._fx = obj.x;
+    obj._fy = obj.y;
+    obj._sx = x;
+    obj._sy = y;
+    obj._st = 0;
+  }
+
+  function blendNet(dt) {
+    const step = dt / 0.05;
+    const slide = (obj) => {
+      if (obj._sx == null) return;
+      obj._st = Math.min(1, (obj._st || 0) + step);
+      obj.x = obj._fx + (obj._sx - obj._fx) * obj._st;
+      obj.y = obj._fy + (obj._sy - obj._fy) * obj._st;
+    };
+    actors.forEach(slide);
+    boars.forEach(slide);
+    fauna.forEach(slide);
+    unicorns.forEach(slide);
+  }
+
   function applyNetState() {
     const state = netState;
     if (!state || !state.players) return;
     state.players.forEach((src, index) => {
       const who = actors[index];
       if (!who || !src) return;
-      who.x = src.x;
-      who.y = src.y;
-      who.dir = src.dir;
-      who.face = src.face;
-      who.moving = src.moving;
-      who.phase = src.phase;
+      const wasIn = who.indoors;
+      const wasMount = !!who.mounted;
       who.gold = src.gold;
       who.energy = src.energy;
       who.mounted = src.mounted;
       who.mountKind = src.mountKind;
       who.indoors = src.indoors;
       who.weapon = src.weapon;
+      who.dir = src.dir;
+      who.face = src.face;
+      who.moving = src.moving;
+      who.phase = src.phase;
       who.slash = src.slash || 0;
+      const far = Math.hypot(who.x - src.x, who.y - src.y) > 90 || wasIn !== src.indoors || wasMount !== !!src.mounted;
+      if (far) {
+        who.x = src.x;
+        who.y = src.y;
+        who._fx = src.x;
+        who._fy = src.y;
+        who._sx = src.x;
+        who._sy = src.y;
+        who._st = 1;
+      } else aimNet(who, src.x, src.y);
       who.asleep = !!src.asleep;
       who.netHeld = src.held;
     });
@@ -845,18 +878,40 @@ window.addEventListener("error", (event) => {
         });
       }
       boars.length = state.boars.length;
-      copy(boars, state.boars, ["x", "y", "dir", "state", "energy"]);
       for (let i = 0; i < boars.length; i++) {
-        if (!boars[i].homeX && !boars[i].homeY) {
-          boars[i].homeX = boars[i].x;
-          boars[i].homeY = boars[i].y;
-          boars[i].tx = boars[i].x;
-          boars[i].ty = boars[i].y;
+        const row = state.boars[i];
+        const boar = boars[i];
+        aimNet(boar, row[0], row[1]);
+        boar.dir = row[2];
+        boar.state = row[3];
+        boar.energy = row[4];
+        if (!boar.homeX && !boar.homeY) {
+          boar.homeX = row[0];
+          boar.homeY = row[1];
+          boar.tx = row[0];
+          boar.ty = row[1];
         }
       }
     }
-    if (state.fauna) copy(fauna, state.fauna, ["x", "y", "dir", "state", "z"]);
-    if (state.unicorns) copy(unicorns, state.unicorns, ["x", "y", "dir", "state"]);
+    if (state.fauna) {
+      const n = Math.min(fauna.length, state.fauna.length);
+      for (let i = 0; i < n; i++) {
+        const row = state.fauna[i];
+        aimNet(fauna[i], row[0], row[1]);
+        fauna[i].dir = row[2];
+        fauna[i].state = row[3];
+        fauna[i].z = row[4];
+      }
+    }
+    if (state.unicorns) {
+      const n = Math.min(unicorns.length, state.unicorns.length);
+      for (let i = 0; i < n; i++) {
+        const row = state.unicorns[i];
+        aimNet(unicorns[i], row[0], row[1]);
+        unicorns[i].dir = row[2];
+        unicorns[i].state = row[3];
+      }
+    }
     if (state.bullets) {
       bullets.length = 0;
       for (const row of state.bullets) {
@@ -2882,6 +2937,7 @@ window.addEventListener("error", (event) => {
     if (!playerCount) return;
     if (netRole === "guest") {
       applyNetState();
+      blendNet(dt);
       const me = localActor();
       useActor(me);
       updateCamera();
@@ -2969,6 +3025,10 @@ window.addEventListener("error", (event) => {
       actors[slot + 1].asleep = false;
       return;
     }
+    if (msg.type === "ping" && msg.id) {
+      netEcho[msg.id] = msg.t;
+      return;
+    }
     if (msg.type !== "input" || !msg.id) return;
     const slot = guestIds.indexOf(msg.id);
     if (slot < 0) return;
@@ -2983,6 +3043,9 @@ window.addEventListener("error", (event) => {
 
   function takeHostMsg(msg) {
     if (!msg || msg.type !== "state") return;
+    if (msg.echo && msg.echo[netSelf] != null) {
+      netRtt = Math.max(0, Math.round(performance.now() - msg.echo[netSelf]));
+    }
     if (msg.who && msg.who[netSelf]) {
       netSlot = msg.who[netSelf];
       netSeated = true;
@@ -3003,6 +3066,10 @@ window.addEventListener("error", (event) => {
   }
 
   let netStamp = "";
+  const netEcho = {};
+  let netRtt = -1;
+  let netPingAcc = 0;
+  let netFireBurst = 0;
 
   function netUp(obj) {
     if (netBroker === "local") {
@@ -3037,13 +3104,13 @@ window.addEventListener("error", (event) => {
   function syncNet(dt) {
     netAcc += dt;
     if (netRole === "host") {
-      if (netAcc < 0.1) return;
+      if (netAcc < 0.05) return;
       netAcc = 0;
       const who = {};
       guestIds.forEach((id, index) => {
         if (id) who[id] = index + 1;
       });
-      netDown({ type: "state", who, mapId, seed: netSeed, tune, state: packNet() });
+      netDown({ type: "state", who, echo: netEcho, mapId, seed: netSeed, tune, state: packNet() });
       return;
     }
     if (netRole !== "guest") return;
@@ -3051,6 +3118,13 @@ window.addEventListener("error", (event) => {
       netAcc = 0;
       netUp({ type: "hello", id: netSelf });
     }
+    netPingAcc += dt;
+    if (netPingAcc >= 0.5) {
+      netPingAcc = 0;
+      netUp({ type: "ping", id: netSelf, t: performance.now() });
+    }
+    if (netPulse.fire) netFireBurst = 4;
+    const fireNow = netPulse.fire || netFireBurst > 0;
     const stick = readStick();
     const body = {
       type: "input",
@@ -3058,12 +3132,13 @@ window.addEventListener("error", (event) => {
       x: Math.round(stick.x * 20) / 20,
       y: Math.round(stick.y * 20) / 20,
       run: keys.has("shift") || touchRun,
-      fire: netPulse.fire,
+      fire: fireNow,
       act: netPulse.act,
       weapon: netPulse.weapon,
     };
     const stamp = [body.x, body.y, body.run, body.fire, body.act, body.weapon].join("|");
     if (stamp === netStamp) return;
+    if (netFireBurst > 0) netFireBurst -= 1;
     netStamp = [body.x, body.y, body.run, false, false, false].join("|");
     netPulse.fire = false;
     netPulse.act = false;
@@ -6318,9 +6393,9 @@ window.addEventListener("error", (event) => {
       if (title) {
         title.textContent = (want
           ? "Polowanie"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v140";
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v141";
       }
-      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v140";
+      document.title = (want ? "Polowanie" : "Strzelanina na Łące w Tucznie u Taty i Zosi") + " v141";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
@@ -6906,7 +6981,7 @@ window.addEventListener("error", (event) => {
     if (time - loop.fpsAt >= 500) {
       const fps = Math.round(loop.frames * 1000 / (time - loop.fpsAt));
       const el = document.getElementById("fps");
-      if (el) el.textContent = "FPS " + fps;
+      if (el) el.textContent = netRole === "guest" && netRtt >= 0 ? "FPS " + fps + " · " + netRtt + " ms" : "FPS " + fps;
       loop.frames = 0;
       loop.fpsAt = time;
     }
