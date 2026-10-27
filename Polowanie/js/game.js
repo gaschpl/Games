@@ -6416,10 +6416,10 @@ window.addEventListener("error", (event) => {
       const title = document.querySelector(".hud .title");
       if (title) {
         title.textContent = want
-          ? "Polowanie v143"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi v143";
+          ? "Polowanie\nv144"
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi v144";
       }
-      document.title = want ? "Polowanie v143" : "Strzelanina na Łące w Tucznie u Taty i Zosi v143";
+      document.title = want ? "Polowanie v144" : "Strzelanina na Łące w Tucznie u Taty i Zosi v144";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
@@ -6432,6 +6432,8 @@ window.addEventListener("error", (event) => {
         saveButton.hidden = netRole === "guest";
         saveButton.textContent = want ? "💾" : "Zapis";
       }
+      const savePick = document.getElementById("save-pick");
+      if (savePick && netRole === "guest") savePick.hidden = true;
       if (want && (mapId === "plewiska" || mapId === "sehnde") && typeof pickMap === "function") pickMap("tuczno");
       updateScore();
     }

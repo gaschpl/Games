@@ -96,6 +96,7 @@ canvas:focus {
 #join-broker-addr[hidden],
 #kick-2[hidden],
 #kick-3[hidden],
+#save-game[hidden],
 #save-pick[hidden],
 .menu button[hidden] {
   display: none !important;
@@ -103,8 +104,27 @@ canvas:focus {
 
 #save-pick {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
+  pointer-events: auto;
+  position: relative;
+  z-index: 3;
+}
+
+#save-pick button {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 4px 6px;
+  color: #f6f1e3;
+  background: #1a2616;
+  border: 2px solid #f0e2b8;
+  box-shadow: 2px 2px 0 #14210f;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .loading {
@@ -474,7 +494,7 @@ body.phone .title {
   margin: 0 0 2px;
   font-size: 13px;
   line-height: 1.1;
-  white-space: nowrap;
+  white-space: pre-line;
 }
 
 body.phone .score {
