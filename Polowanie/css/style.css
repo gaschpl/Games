@@ -401,9 +401,43 @@ body.phone .hint {
   margin: 8px auto;
 }
 
-#net-go[hidden],
-.net-code[hidden] {
+#net-log {
   display: none;
+  position: fixed;
+  z-index: 7;
+  top: 8px;
+  left: 168px;
+  width: min(260px, 46vw);
+  max-height: 96px;
+  overflow: auto;
+  margin: 0;
+  padding: 4px 6px;
+  color: #efe6d2;
+  background: rgba(20, 33, 15, 0.92);
+  border: 2px solid #f0e2b8;
+  font: 11px/1.35 ui-monospace, Consolas, monospace;
+  pointer-events: auto;
+}
+
+#net-log.open {
+  display: block;
+}
+
+#net-accept {
+  position: fixed;
+  z-index: 7;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  color: #172014;
+  background: #f2d04a;
+  border: 3px solid #fff4b8;
+  font: 700 16px "Segoe UI", system-ui, sans-serif;
+}
+
+#net-accept[hidden] {
+  display: none !important;
 }
 
 body.phone #play {

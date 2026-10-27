@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.json" />
   <title>Strzelanina na Łące w Tucznie u Taty i Zosi</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🌿%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="css/style.css?v=123" />
+  <link rel="stylesheet" href="css/style.css?v=125" />
 </head>
 <body>
   <canvas id="game" aria-label="Strzelanina na Łące w Tucznie u Taty i Zosi. Dwóch graczy. Gracz 1: WASD, E, spacja. Gracz 2: pad, drążek, A, X albo RT."></canvas>
@@ -26,8 +26,11 @@
     <div class="hud-buttons">
       <button type="button" id="music" class="music" aria-pressed="true">Muzyka: włączona</button>
       <button type="button" id="boars-toggle" class="music" aria-pressed="true">Dziki: włączone</button>
+      <button type="button" id="net-log-btn" class="music" aria-pressed="false" title="Komunikaty połączenia">ℹ</button>
     </div>
   </div>
+  <div id="net-log"></div>
+  <button type="button" id="net-accept" hidden>Zaakceptuj gracza</button>
   <p class="banner" id="banner" hidden>Poziom 2</p>
   <div class="loading" id="loading" hidden>
     <p class="menu-title">Wczytywanie</p>
@@ -51,12 +54,12 @@
     <p class="menu-note" id="players-note">Klawisz 1 albo 2</p>
     <button type="button" id="play">Graj</button>
     <div class="choice-row" id="net-row">
-      <button type="button" id="net-host">Załóż grę</button>
-      <button type="button" id="net-join">Dołącz</button>
+    <button type="button" id="net-host">Utwórz grę 2-osobową</button>
+    <button type="button" id="net-join">Dołącz do gry</button>
     </div>
     <input id="net-code-input" class="net-code" hidden maxlength="4" placeholder="KOD" autocomplete="off" />
     <button type="button" id="net-go" hidden>Wejdź</button>
-    <p class="menu-note" id="net-status"></p>
+    <p class="menu-note" id="net-status" hidden></p>
     <p class="menu-title set-title">Ustawienia</p>
     <div class="sets">
     <label class="set">Bieg <span id="run-v">76</span>
@@ -118,6 +121,6 @@
   <script src="js/plewiska-map.js?v=114"></script>
   <script src="js/sehnde-map.js?v=114"></script>
   <script src="js/poznan-map.js?v=114"></script>
-  <script src="js/game.js?v=124"></script>
+  <script src="js/game.js?v=125"></script>
 </body>
 </html>

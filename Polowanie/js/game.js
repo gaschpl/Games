@@ -144,6 +144,7 @@ window.addEventListener("error", (event) => {
   const touchStick = { x: 0, y: 0 };
   let netPeer = null;
   let netConn = null;
+  let netAccepted = false;
   let startGuestGame = function () {};
   let netCode = "";
   let netSeed = 0;
@@ -2837,6 +2838,15 @@ window.addEventListener("error", (event) => {
     syncNet(dt);
   }
 
+  function netLog(line) {
+    const box = document.getElementById("net-log");
+    if (!box) return;
+    const row = document.createElement("div");
+    row.textContent = line;
+    box.appendChild(row);
+    box.scrollTop = box.scrollHeight;
+  }
+
   function takeNetConn(conn) {
     netConn = conn;
     conn.on("data", (msg) => {
@@ -2849,16 +2859,15 @@ window.addEventListener("error", (event) => {
         if (msg.act) netIn.act = true;
         if (msg.weapon) netIn.weapon = true;
       }
-      if (msg.type === "state") {
-        if (msg.state && msg.state.players) netState = msg.state;
-        if (!playerCount && msg.seed) {
-          netRole = "guest";
-          netSeed = msg.seed;
-          netTune = msg.tune || null;
-          if (msg.mapId) mapId = msg.mapId;
-          startGuestGame();
-        }
+      if (msg.type === "accept" && !playerCount) {
+        netRole = "guest";
+        netSeed = msg.seed;
+        netTune = msg.tune || null;
+        if (msg.mapId) mapId = msg.mapId;
+        netLog("Gospodarz zaakceptował. Wchodzę do gry.");
+        startGuestGame();
       }
+      if (msg.type === "state" && msg.state && msg.state.players) netState = msg.state;
     });
   }
 
@@ -2868,6 +2877,7 @@ window.addEventListener("error", (event) => {
     if (netAcc < 0.1) return;
     netAcc = 0;
     if (netRole === "host") {
+      if (!netAccepted) return;
       netConn.send({ type: "state", mapId, seed: netSeed, tune, state: packNet() });
       return;
     }
@@ -6208,76 +6218,100 @@ window.addEventListener("error", (event) => {
     document.getElementById("one")?.addEventListener("click", () => choosePlayers(1));
     document.getElementById("two")?.addEventListener("click", () => choosePlayers(2));
     document.getElementById("play")?.addEventListener("click", () => {
-      const status = document.getElementById("net-status");
       const menu = document.getElementById("menu");
-      if (netCode && netRole !== "guest") {
-        netRole = "host";
-        if (!netSeed) netSeed = Math.floor(Math.random() * 1000000000);
-        readTune();
-      }
-      if (status) status.textContent = "Startuję grę…";
       if (menu) menu.hidden = true;
       showLoad(0);
-      choosePlayers(netRole === "host" ? 2 : 1).catch((error) => {
+      choosePlayers(1).catch((error) => {
         if (menu) menu.hidden = false;
         hideLoad();
-        if (status) status.textContent = "Start się nie udał: " + (error && error.message ? error.message : "błąd");
+        netLog("Start się nie udał: " + (error && error.message ? error.message : "błąd"));
       });
+    });
+    document.getElementById("net-log-btn")?.addEventListener("click", () => {
+      const box = document.getElementById("net-log");
+      const button = document.getElementById("net-log-btn");
+      if (!box) return;
+      const open = box.classList.toggle("open");
+      if (button) button.setAttribute("aria-pressed", open ? "true" : "false");
+    });
+    document.getElementById("net-accept")?.addEventListener("click", () => {
+      if (!netConn || !netConn.open) return;
+      netAccepted = true;
+      readTune();
+      netConn.send({ type: "accept", mapId, seed: netSeed, tune });
+      const button = document.getElementById("net-accept");
+      if (button) button.hidden = true;
+      netLog("Gracz zaakceptowany.");
     });
     document.getElementById("net-host")?.addEventListener("click", () => {
       enterPhoneFullscreen();
       if (typeof Peer !== "function") {
-        const status = document.getElementById("net-status");
-        if (status) status.textContent = "Brak PeerJS. Telefon i laptop muszą mieć internet.";
+        netLog("Brak PeerJS. Oba urządzenia muszą mieć internet.");
+        document.getElementById("net-log")?.classList.add("open");
         return;
       }
       const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
       netCode = "";
       for (let i = 0; i < 4; i++) netCode += alphabet[Math.floor(Math.random() * alphabet.length)];
+      netAccepted = false;
       if (netPeer) netPeer.destroy();
       netPeer = new Peer(netCode);
-      const status = document.getElementById("net-status");
       netPeer.on("open", () => {
-        if (status) status.textContent = "Kod: " + netCode + ". Na drugim urządzeniu Dołącz, a tutaj Graj.";
+        netLog("Kod pokoju: " + netCode);
       });
       netPeer.on("connection", (conn) => {
         takeNetConn(conn);
         conn.on("open", () => {
-          if (status) status.textContent = "Drugi gracz połączony. Naciśnij Graj.";
+          const button = document.getElementById("net-accept");
+          if (button) button.hidden = false;
+          netLog("Ktoś chce dołączyć.");
         });
       });
-      netPeer.on("error", (err) => {
+      netPeer.on("error", () => {
         if (netPeer && netPeer.open) return;
-        if (status) status.textContent = "Nie udało się założyć pokoju. Sprawdź internet i kliknij Załóż grę jeszcze raz.";
+        netLog("Nie udało się utworzyć gry. Sprawdź internet.");
+        document.getElementById("net-log")?.classList.add("open");
+      });
+      netRole = "host";
+      netSeed = Math.floor(Math.random() * 1000000000);
+      readTune();
+      const menu = document.getElementById("menu");
+      if (menu) menu.hidden = true;
+      showLoad(0);
+      choosePlayers(2).catch((error) => {
+        if (menu) menu.hidden = false;
+        hideLoad();
+        netLog("Start się nie udał: " + (error && error.message ? error.message : "błąd"));
+        document.getElementById("net-log")?.classList.add("open");
       });
     });
     document.getElementById("net-join")?.addEventListener("click", () => {
       enterPhoneFullscreen();
       const input = document.getElementById("net-code-input");
-      const go = document.getElementById("net-go");
-      if (input) input.hidden = false;
-      if (go) go.hidden = false;
-    });
-    document.getElementById("net-go")?.addEventListener("click", () => {
-      const input = document.getElementById("net-code-input");
       const code = (input && input.value || "").trim().toUpperCase();
-      const status = document.getElementById("net-status");
-      if (!code || typeof Peer !== "function") {
-        if (status) status.textContent = "Wpisz kod. Potrzebny jest też internet.";
+      if (!input || input.hidden || !code) {
+        if (input) input.hidden = false;
+        netLog("Wpisz kod pokoju i kliknij Dołącz do gry jeszcze raz.");
         return;
       }
-      if (status) status.textContent = "Łączę z kodem " + code + "…";
+      if (typeof Peer !== "function") {
+        netLog("Brak PeerJS. Oba urządzenia muszą mieć internet.");
+        document.getElementById("net-log")?.classList.add("open");
+        return;
+      }
+      netLog("Łączę z kodem " + code + "…");
       if (netPeer) netPeer.destroy();
       netPeer = new Peer();
       netPeer.on("open", () => {
         const conn = netPeer.connect(code);
         takeNetConn(conn);
         conn.on("open", () => {
-          if (status) status.textContent = "Połączono. Czekam, aż drugi gracz naciśnie Graj…";
+          netLog("Połączono. Czekam na akceptację gospodarza.");
         });
       });
       netPeer.on("error", () => {
-        if (status) status.textContent = "Nie ma takiego pokoju albo brak internetu.";
+        netLog("Nie ma takiego pokoju albo brak internetu.");
+        document.getElementById("net-log")?.classList.add("open");
       });
     });
     syncPhone();
