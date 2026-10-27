@@ -6208,14 +6208,21 @@ window.addEventListener("error", (event) => {
     document.getElementById("one")?.addEventListener("click", () => choosePlayers(1));
     document.getElementById("two")?.addEventListener("click", () => choosePlayers(2));
     document.getElementById("play")?.addEventListener("click", () => {
+      const status = document.getElementById("net-status");
+      const menu = document.getElementById("menu");
       if (netCode && netRole !== "guest") {
         netRole = "host";
-        netSeed = Math.floor(Math.random() * 1000000000);
+        if (!netSeed) netSeed = Math.floor(Math.random() * 1000000000);
         readTune();
-        choosePlayers(2);
-        return;
       }
-      choosePlayers(1);
+      if (status) status.textContent = "Startuję grę…";
+      if (menu) menu.hidden = true;
+      showLoad(0);
+      choosePlayers(netRole === "host" ? 2 : 1).catch((error) => {
+        if (menu) menu.hidden = false;
+        hideLoad();
+        if (status) status.textContent = "Start się nie udał: " + (error && error.message ? error.message : "błąd");
+      });
     });
     document.getElementById("net-host")?.addEventListener("click", () => {
       enterPhoneFullscreen();
@@ -6239,7 +6246,8 @@ window.addEventListener("error", (event) => {
           if (status) status.textContent = "Drugi gracz połączony. Naciśnij Graj.";
         });
       });
-      netPeer.on("error", () => {
+      netPeer.on("error", (err) => {
+        if (netPeer && netPeer.open) return;
         if (status) status.textContent = "Nie udało się założyć pokoju. Sprawdź internet i kliknij Załóż grę jeszcze raz.";
       });
     });
@@ -6272,7 +6280,6 @@ window.addEventListener("error", (event) => {
         if (status) status.textContent = "Nie ma takiego pokoju albo brak internetu.";
       });
     });
-    window.addEventListener("pointerdown", () => enterPhoneFullscreen());
     syncPhone();
     window.addEventListener("resize", syncPhone);
     window.addEventListener("orientationchange", syncPhone);
