@@ -743,7 +743,7 @@ window.addEventListener("error", (event) => {
       gold: who.gold, energy: who.energy,
       mounted: who.mounted, mountKind: who.mountKind || "",
       indoors: who.indoors, weapon: who.weapon,
-      moving: who.moving, phase: who.phase,
+      moving: who.moving, phase: who.phase, slash: who.slash || 0,
       held: heldCounts(who),
     });
     return {
@@ -773,6 +773,7 @@ window.addEventListener("error", (event) => {
       who.weapon = src.weapon;
       who.moving = src.moving;
       who.phase = src.phase;
+      who.slash = src.slash || 0;
       who.netHeld = src.held;
     });
     const copy = (list, rows, fields) => {
@@ -3283,6 +3284,13 @@ window.addEventListener("error", (event) => {
   }
 
   function activeWeapon() {
+    if (player.netHeld) {
+      if (player.netHeld[weapon] > 0) return weapon;
+      for (const kind of ["gun", "net", "sword", "raw", "roast"]) {
+        if (player.netHeld[kind] > 0) return kind;
+      }
+      return "";
+    }
     if (hasKind(player, weapon)) return weapon;
     if (itemOf(player, "gun")) return "gun";
     if (itemOf(player, "net")) return "net";
@@ -6283,11 +6291,12 @@ window.addEventListener("error", (event) => {
       const open = box.classList.toggle("open");
       if (button) button.setAttribute("aria-pressed", open ? "true" : "false");
     });
-    document.getElementById("net-join")?.addEventListener("click", () => {
+    const joinNet = () => {
       enterPhoneFullscreen();
       const input = document.getElementById("net-code-input");
-      const code = (input && input.value || "").trim().toUpperCase();
-      if (!code) {
+      const typed = (input && input.value || "").trim().toUpperCase();
+      if (typed) netCode = typed;
+      if (!netCode) {
         netLog("Wpisz kod pokoju.");
         return;
       }
@@ -6296,18 +6305,24 @@ window.addEventListener("error", (event) => {
         document.getElementById("net-log")?.classList.add("open");
         return;
       }
-      netLog("Łączę z kodem " + code + "…");
+      netLog("Łączę z kodem " + netCode + "…");
       if (netPeer) netPeer.destroy();
       netPeer = new Peer();
       netPeer.on("open", () => {
-        const conn = netPeer.connect(code);
+        const conn = netPeer.connect(netCode);
         takeNetConn(conn);
-        conn.on("open", () => netLog("Połączono. Czekam, aż gra się zacznie."));
+        conn.on("open", () => netLog("Połączono."));
+        conn.on("close", () => netLog("Połączenie przerwane. Wróć do gry, żeby połączyć ponownie."));
       });
       netPeer.on("error", () => {
         netLog("Nie ma takiego pokoju albo brak internetu.");
         document.getElementById("net-log")?.classList.add("open");
       });
+    };
+    document.getElementById("net-join")?.addEventListener("click", () => joinNet());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      if (netRole === "guest" && netCode && (!netConn || !netConn.open)) joinNet();
     });
     syncPhone();
     window.addEventListener("resize", syncPhone);
