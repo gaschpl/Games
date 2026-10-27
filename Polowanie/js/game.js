@@ -124,6 +124,7 @@ window.addEventListener("error", (event) => {
   let net;
   let gear = [];
   let scalePixel = 3;
+  let phoneScaleApplied = false;
   let joined = true;
   let weapon = "gun";
   let unicorn;
@@ -6186,6 +6187,10 @@ window.addEventListener("error", (event) => {
       const portrait = want && !landscape;
       phoneMode = want && landscape;
       document.body.classList.toggle("phone", want);
+      if (want && !phoneScaleApplied) {
+        phoneScaleApplied = true;
+        scalePixel = 4;
+      }
       const turn = document.getElementById("turn");
       if (turn) turn.hidden = !portrait;
       const split = document.getElementById("mode-split");
