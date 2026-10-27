@@ -159,6 +159,9 @@ window.addEventListener("error", (event) => {
   let mqttClient = null;
   let netSelf = "";
   let netSeated = false;
+  let netBroker = "emqx";
+  const cutWoods = [];
+  const appliedCuts = new Set();
   const guestIds = [null, null];
   const netIns = [null, { x: 0, y: 0, run: false, fire: false, act: false, weapon: false }, { x: 0, y: 0, run: false, fire: false, act: false, weapon: false }];
   let netRole = "";
@@ -173,7 +176,6 @@ window.addEventListener("error", (event) => {
   let ponds = [];
   let ducks = [];
   let boars = [];
-  let cutWoods = [];
   let fauna = [];
   let butterflyCap = 0;
   let butterflyTimer = 0;
@@ -451,9 +453,7 @@ window.addEventListener("error", (event) => {
     player.shootCooldown = shootCooldown;
     player.target = target;
     player.outsideSpot = outsideSpot;
-    const next = !mounted ? null
-      : mountKind === "boar" ? player.ride
-      : (player.ride && unicorns.indexOf(player.ride) >= 0 ? player.ride : unicorn);
+    const next = mounted ? (mountKind === "boar" ? player.ride : unicorn) : null;
     if (player.ride && player.ride !== next && player.ride.rider === player) player.ride.rider = null;
     player.ride = next;
     if (player.ride) player.ride.rider = player;
@@ -761,9 +761,8 @@ window.addEventListener("error", (event) => {
     const person = (who) => ({
       x: who.x, y: who.y, dir: who.dir, face: who.face,
       gold: who.gold, energy: who.energy,
-      indoors: who.indoors, weapon: who.weapon,
       mounted: who.mounted, mountKind: who.mountKind || "",
-      ride: who.mountKind === "boar" ? boars.indexOf(who.ride) : unicorns.indexOf(who.ride),
+      indoors: who.indoors, weapon: who.weapon,
       moving: who.moving, phase: who.phase, slash: who.slash || 0,
       asleep: !!who.asleep,
       held: heldCounts(who),
@@ -778,12 +777,12 @@ window.addEventListener("error", (event) => {
       fauna: fauna.map((a) => [a.x, a.y, a.dir, a.state, a.z || 0]),
       unicorns: unicorns.map((u) => [u.x, u.y, u.dir, u.state]),
       bullets: bullets.map((b) => [b.x, b.y, b.kind || "gun", whoIndex(b.owner)]),
+      cuts: cutWoods,
       gear: gear.map((item) => [
         item.x, item.y, item.held ? 1 : 0,
         whoIndex(item.holder),
         item.kind,
       ]),
-      cutWoods,
     };
   }
 
@@ -801,10 +800,6 @@ window.addEventListener("error", (event) => {
       who.energy = src.energy;
       who.mounted = src.mounted;
       who.mountKind = src.mountKind;
-      if (!src.mounted) who.ride = null;
-      else if (src.mountKind === "boar") who.ride = boars[src.ride] || null;
-      else who.ride = unicorns[src.ride] || null;
-      if (who.ride) who.ride.rider = who;
       who.indoors = src.indoors;
       who.weapon = src.weapon;
       who.moving = src.moving;
@@ -837,27 +832,6 @@ window.addEventListener("error", (event) => {
         item.anim = 0;
       });
     }
-    if (state.cutWoods && state.cutWoods.length) {
-      let changed = false;
-      for (const spot of state.cutWoods) {
-        const wx = spot[0];
-        const wy = spot[1];
-        const wood = woods.findIndex((tree) => Math.hypot(tree.x - wx, tree.y - wy) < 8);
-        if (wood >= 0) {
-          eraseWood(woods[wood]);
-          woods.splice(wood, 1);
-          changed = true;
-          continue;
-        }
-        const prop = props.findIndex((item) => (item.kind === "tree" || item.kind === "bush") && Math.hypot(item.x - wx, item.y - wy) < 8);
-        if (prop >= 0) {
-          props.splice(prop, 1);
-          changed = true;
-        }
-      }
-      if (changed) buildWoodGrid();
-      state.cutWoods.length = 0;
-    }
     if (state.boars) {
       while (boars.length < state.boars.length) {
         boars.push({
@@ -886,6 +860,14 @@ window.addEventListener("error", (event) => {
           x: row[0], y: row[1], kind: row[2], owner: actors[row[3]] || actors[0],
           vx: 0, vy: 0, life: 1, indoors: false,
         });
+      }
+    }
+    if (state.cuts) {
+      for (const row of state.cuts) {
+        const key = row[0] + "," + row[1];
+        if (appliedCuts.has(key)) continue;
+        appliedCuts.add(key);
+        dropWood(row[0], row[1]);
       }
     }
   }
@@ -2188,6 +2170,26 @@ window.addEventListener("error", (event) => {
     return out;
   }
 
+  function dropWood(x, y) {
+    let gone = false;
+    for (let i = props.length - 1; i >= 0; i--) {
+      const prop = props[i];
+      if (prop.kind !== "tree" && prop.kind !== "bush") continue;
+      if (Math.abs(prop.x - x) < 3 && Math.abs(prop.y - y) < 3) {
+        props.splice(i, 1);
+        gone = true;
+      }
+    }
+    for (let i = woods.length - 1; i >= 0; i--) {
+      const tree = woods[i];
+      if (Math.abs(tree.x - x) < 3 && Math.abs(tree.y - y) < 3) {
+        woods.splice(i, 1);
+        gone = true;
+      }
+    }
+    if (gone) buildWoodGrid();
+  }
+
   function eraseWood(tree) {
     if (!field || !tree.sprite) return;
     const g = field.getContext("2d");
@@ -2879,6 +2881,7 @@ window.addEventListener("error", (event) => {
       const me = localActor();
       useActor(me);
       updateCamera();
+      keepActor();
       if (!me.indoors) revealAround(me.x, me.y);
       useActor(me);
       syncNet(dt);
@@ -2957,20 +2960,7 @@ window.addEventListener("error", (event) => {
         netLog("Pokój pełny. Mogą dołączyć dwie osoby.");
         return;
       }
-      if (!guestIds[slot]) {
-        netLog("Dołączył gracz " + (slot + 2));
-        const who = actors[slot + 1];
-        const side = slot === 0 ? 28 : -28;
-        who.x = actors[0].x + side;
-        who.y = actors[0].y + 8;
-        who.outsideSpot = { x: who.x, y: who.y };
-        who.mounted = false;
-        who.mountKind = "";
-        if (who.ride && who.ride.rider === who) who.ride.rider = null;
-        who.ride = null;
-        who.target = null;
-        who.indoors = false;
-      }
+      if (!guestIds[slot]) netLog("Dołączył gracz " + (slot + 2));
       guestIds[slot] = msg.id;
       actors[slot + 1].asleep = false;
       return;
@@ -4200,16 +4190,12 @@ window.addEventListener("error", (event) => {
       }
     }
     if (choppedWood) {
-      const index = woods.indexOf(choppedWood);
-      if (index >= 0) {
-        cutWoods.push([choppedWood.x, choppedWood.y]);
-        woods.splice(index, 1);
-      }
-      buildWoodGrid();
+      cutWoods.push([Math.round(choppedWood.x), Math.round(choppedWood.y)]);
+      dropWood(choppedWood.x, choppedWood.y);
       playHit();
     } else if (chopped >= 0) {
-      cutWoods.push([props[chopped].x, props[chopped].y]);
-      props.splice(chopped, 1);
+      cutWoods.push([Math.round(props[chopped].x), Math.round(props[chopped].y)]);
+      dropWood(props[chopped].x, props[chopped].y);
       playHit();
     }
   }
@@ -6397,13 +6383,26 @@ window.addEventListener("error", (event) => {
       }
       const setup = document.getElementById("setup");
       const join = document.getElementById("join-box");
+      const brokers = document.getElementById("broker-choice");
       if (setup) setup.hidden = mode === "join";
       if (join) join.hidden = mode !== "join";
+      if (brokers) brokers.hidden = mode !== "host";
     };
     document.getElementById("mode-solo")?.addEventListener("click", () => pickMode("solo"));
     document.getElementById("mode-split")?.addEventListener("click", () => pickMode("split"));
     document.getElementById("mode-host")?.addEventListener("click", () => pickMode("host"));
     document.getElementById("mode-join")?.addEventListener("click", () => pickMode("join"));
+    const pickBroker = (name) => {
+      netBroker = name;
+      for (const id of ["broker-emqx", "broker-hivemq", "join-broker-emqx", "join-broker-hivemq"]) {
+        const button = document.getElementById(id);
+        if (button) button.classList.toggle("picked", id.endsWith(name));
+      }
+    };
+    document.getElementById("broker-emqx")?.addEventListener("click", () => pickBroker("emqx"));
+    document.getElementById("broker-hivemq")?.addEventListener("click", () => pickBroker("hivemq"));
+    document.getElementById("join-broker-emqx")?.addEventListener("click", () => pickBroker("emqx"));
+    document.getElementById("join-broker-hivemq")?.addEventListener("click", () => pickBroker("hivemq"));
     const failStart = (error) => {
       const menu = document.getElementById("menu");
       if (menu) menu.hidden = false;
@@ -6422,46 +6421,35 @@ window.addEventListener("error", (event) => {
         try { mqttClient.end(true); } catch (e) {}
         mqttClient = null;
       }
-      const brokers = [
-        "wss://broker.emqx.io:8084/mqtt",
-        "wss://broker.hivemq.com:8884/mqtt",
-      ];
-      let brokerAt = 0;
-      const openBroker = () => {
-        mqttClient = mqtt.connect(brokers[brokerAt], {
-          clientId: netSelf + String(brokerAt),
-          clean: true,
-          reconnectPeriod: 2000,
-          connectTimeout: 8000,
-        });
-        let opened = false;
-        mqttClient.on("connect", () => {
-          opened = true;
-          mqttClient.subscribe(role === "host" ? "polowanie/" + netCode + "/up" : "polowanie/" + netCode + "/down");
-          if (role === "host") netLog("Kod pokoju: " + netCode);
-          else {
-            netLog("Połączono. Czekam na grę.");
-            mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify({ type: "hello", id: netSelf }));
-          }
-        });
-        mqttClient.on("message", (_topic, payload) => {
-          let msg = null;
-          try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
-          if (role === "host") takeGuestMsg(msg);
-          else takeHostMsg(msg);
-        });
-        mqttClient.on("error", () => {
-          if (opened) return;
-          try { mqttClient.end(true); } catch (e) {}
-          brokerAt += 1;
-          if (brokerAt < brokers.length) openBroker();
-          else {
-            netLog("Nie udało się połączyć z serwerem gry.");
-            document.getElementById("net-log")?.classList.add("open");
-          }
-        });
+      const brokers = {
+        emqx: "wss://broker.emqx.io:8084/mqtt",
+        hivemq: "wss://broker.hivemq.com:8884/mqtt",
       };
-      openBroker();
+      const url = brokers[netBroker] || brokers.emqx;
+      mqttClient = mqtt.connect(url, {
+        clientId: netSelf,
+        clean: true,
+        reconnectPeriod: 2000,
+        connectTimeout: 8000,
+      });
+      mqttClient.on("connect", () => {
+        mqttClient.subscribe(role === "host" ? "polowanie/" + netCode + "/up" : "polowanie/" + netCode + "/down");
+        if (role === "host") netLog("Kod pokoju: " + netCode + " · " + (netBroker === "hivemq" ? "HiveMQ" : "EMQX"));
+        else {
+          netLog("Połączono. Czekam na grę.");
+          mqttClient.publish("polowanie/" + netCode + "/up", JSON.stringify({ type: "hello", id: netSelf }));
+        }
+      });
+      mqttClient.on("message", (_topic, payload) => {
+        let msg = null;
+        try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+        if (role === "host") takeGuestMsg(msg);
+        else takeHostMsg(msg);
+      });
+      mqttClient.on("error", () => {
+        netLog("Serwer nie odpowiada. Wybierz drugi przy zakładaniu pokoju.");
+        document.getElementById("net-log")?.classList.add("open");
+      });
       return true;
     };
     const openRoom = () => {

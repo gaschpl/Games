@@ -90,6 +90,7 @@ canvas:focus {
 .menu[hidden],
 #setup[hidden],
 #join-box[hidden],
+#broker-choice[hidden],
 .menu button[hidden] {
   display: none !important;
 }

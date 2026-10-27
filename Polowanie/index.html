@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.json" />
   <title>Strzelanina na Łące w Tucznie u Taty i Zosi v137</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🌿%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="css/style.css?v=136" />
+  <link rel="stylesheet" href="css/style.css?v=137" />
 </head>
 <body>
   <canvas id="game" aria-label="Strzelanina na Łące w Tucznie u Taty i Zosi. Dwóch graczy. Gracz 1: WASD, E, spacja. Gracz 2: pad, drążek, A, X albo RT."></canvas>
@@ -54,6 +54,13 @@
     </div>
     <div id="setup" hidden>
       <button type="button" id="play">Graj</button>
+      <div id="broker-choice" hidden>
+        <p class="menu-title set-title">Serwer</p>
+        <div class="choice-row">
+          <button type="button" id="broker-emqx" class="picked">EMQX</button>
+          <button type="button" id="broker-hivemq">HiveMQ</button>
+        </div>
+      </div>
       <p class="menu-title set-title">Ustawienia</p>
       <div class="sets">
     <label class="set">Bieg <span id="run-v">76</span>
@@ -101,6 +108,11 @@
     </div>
     </div>
     <div id="join-box" hidden>
+      <p class="menu-title set-title">Serwer</p>
+      <div class="choice-row">
+        <button type="button" id="join-broker-emqx" class="picked">EMQX</button>
+        <button type="button" id="join-broker-hivemq">HiveMQ</button>
+      </div>
       <input id="net-code-input" class="net-code" maxlength="4" placeholder="KOD" autocomplete="off" />
       <button type="button" id="net-join">Dołącz</button>
     </div>
