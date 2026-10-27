@@ -825,7 +825,25 @@ window.addEventListener("error", (event) => {
         item.anim = 0;
       });
     }
-    if (state.boars) copy(boars, state.boars, ["x", "y", "dir", "state", "energy"]);
+    if (state.boars) {
+      while (boars.length < state.boars.length) {
+        boars.push({
+          x: 0, y: 0, homeX: 0, homeY: 0, tx: 0, ty: 0,
+          dir: "right", state: "roam", wander: 0, bite: 0, rider: null,
+          vanish: 0, respawn: 0, energy: tune.boarEnergy, voice: 0,
+        });
+      }
+      boars.length = state.boars.length;
+      copy(boars, state.boars, ["x", "y", "dir", "state", "energy"]);
+      for (let i = 0; i < boars.length; i++) {
+        if (!boars[i].homeX && !boars[i].homeY) {
+          boars[i].homeX = boars[i].x;
+          boars[i].homeY = boars[i].y;
+          boars[i].tx = boars[i].x;
+          boars[i].ty = boars[i].y;
+        }
+      }
+    }
     if (state.fauna) copy(fauna, state.fauna, ["x", "y", "dir", "state", "z"]);
     if (state.unicorns) copy(unicorns, state.unicorns, ["x", "y", "dir", "state"]);
     if (state.bullets) {
@@ -2217,7 +2235,7 @@ window.addEventListener("error", (event) => {
     if (!boarsOn) return;
     const count = tune.boars;
     let guard = 0;
-    while (boars.length < count && guard < 500) {
+    while (boars.length < count && guard < 4000) {
       guard += 1;
       const tx = 4 + Math.floor(Math.random() * (COLS - 8));
       const ty = 4 + Math.floor(Math.random() * (ROWS - 8));
@@ -6243,6 +6261,7 @@ window.addEventListener("error", (event) => {
       } finally {
         if (restoreRandom) restoreRandom();
       }
+      if (boarsOn && boars.length < tune.boars) spawnBoars();
       hideLoad();
       sfx.arm();
       resize();
