@@ -443,7 +443,7 @@ window.addEventListener("error", (event) => {
     shootCooldown = who.shootCooldown;
     target = who.target;
     outsideSpot = who.outsideSpot;
-    if (who.ride && unicorns.indexOf(who.ride) >= 0) unicorn = who.ride;
+    unicorn = who.ride && unicorns.indexOf(who.ride) >= 0 ? who.ride : null;
   }
 
   function keepActor() {
@@ -881,13 +881,22 @@ window.addEventListener("error", (event) => {
       for (let i = 0; i < boars.length; i++) {
         const row = state.boars[i];
         const boar = boars[i];
-        aimNet(boar, row[0], row[1]);
+        if (netRole === "guest") aimNet(boar, row[0], row[1]);
+        else {
+          boar.x = row[0];
+          boar.y = row[1];
+        }
         boar.dir = row[2];
         boar.state = row[3];
         boar.energy = row[4];
         const rider = row[5] >= 0 ? actors[row[5]] : null;
         boar.rider = rider || null;
-        if (rider && rider.mounted && rider.mountKind === "boar") rider.ride = boar;
+        if (rider && rider.mountKind === "boar") {
+          rider.mounted = true;
+          rider.ride = boar;
+          boar.x = rider.x;
+          boar.y = rider.y;
+        }
         if (!boar.homeX && !boar.homeY) {
           boar.homeX = row[0];
           boar.homeY = row[1];
@@ -910,12 +919,27 @@ window.addEventListener("error", (event) => {
       const n = Math.min(unicorns.length, state.unicorns.length);
       for (let i = 0; i < n; i++) {
         const row = state.unicorns[i];
-        aimNet(unicorns[i], row[0], row[1]);
-        unicorns[i].dir = row[2];
-        unicorns[i].state = row[3];
+        const uni = unicorns[i];
+        if (netRole === "guest") aimNet(uni, row[0], row[1]);
+        else {
+          uni.x = row[0];
+          uni.y = row[1];
+        }
+        uni.dir = row[2];
+        uni.state = row[3];
         const rider = row[4] >= 0 ? actors[row[4]] : null;
-        unicorns[i].rider = rider || null;
-        if (rider && rider.mounted && rider.mountKind !== "boar") rider.ride = unicorns[i];
+        uni.rider = rider || null;
+        if (rider && rider.mountKind !== "boar") {
+          rider.mounted = true;
+          rider.mountKind = rider.mountKind || "uni";
+          rider.ride = uni;
+          uni.inside = false;
+          if (uni.state !== "dead" && uni.state !== "gone") uni.state = "free";
+          uni.x = rider.x;
+          uni.y = rider.y;
+          uni.homeX = rider.x;
+          uni.homeY = rider.y;
+        }
       }
     }
     if (state.bullets) {
@@ -6416,10 +6440,10 @@ window.addEventListener("error", (event) => {
       const title = document.querySelector(".hud .title");
       if (title) {
         title.textContent = want
-          ? "Polowanie\nv144"
-          : "Strzelanina na Łące w Tucznie u Taty i Zosi v144";
+          ? "Polowanie\nv145"
+          : "Strzelanina na Łące w Tucznie u Taty i Zosi v145";
       }
-      document.title = want ? "Polowanie v144" : "Strzelanina na Łące w Tucznie u Taty i Zosi v144";
+      document.title = want ? "Polowanie v145" : "Strzelanina na Łące w Tucznie u Taty i Zosi v145";
       setMusic(musicOn);
       const boarButton = document.getElementById("boars-toggle");
       if (boarButton) {
