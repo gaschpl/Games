@@ -90,8 +90,20 @@ window.addEventListener("error", (event) => {
     };
   }
 
-  const actors = [blankActor(false), blankActor(true)];
+  const actors = [blankActor(false), blankActor(true), blankActor(true)];
+  actors[2].asleep = true;
   let player = actors[0];
+  let netSlot = 1;
+
+  function localActor() {
+    return netRole === "guest" ? actors[netSlot] || actors[1] : actors[0];
+  }
+
+  function livePeople() {
+    if (netRole) return actors.filter((who) => !who.asleep);
+    if (playerCount === 2) return [actors[0], actors[1]];
+    return [actors[0]];
+  }
 
   let low = document.createElement("canvas");
   let low2 = document.createElement("canvas");
@@ -144,6 +156,8 @@ window.addEventListener("error", (event) => {
   const touchStick = { x: 0, y: 0 };
   let netPeer = null;
   let netConn = null;
+  const netConns = [null, null];
+  const netIns = [null, { x: 0, y: 0, run: false, fire: false, act: false, weapon: false }, { x: 0, y: 0, run: false, fire: false, act: false, weapon: false }];
   let netRole = "";
   let startGuestGame = function () {};
   let netCode = "";
@@ -151,7 +165,6 @@ window.addEventListener("error", (event) => {
   let netTune = null;
   let netState = null;
   let netAcc = 0;
-  const netIn = { x: 0, y: 0, run: false, fire: false, act: false, weapon: false };
   const netPulse = { fire: false, act: false, weapon: false };
   let pond = { x: 16, y: 14, rx: 5.4, ry: 4 };
   let ponds = [];
@@ -744,17 +757,22 @@ window.addEventListener("error", (event) => {
       mounted: who.mounted, mountKind: who.mountKind || "",
       indoors: who.indoors, weapon: who.weapon,
       moving: who.moving, phase: who.phase, slash: who.slash || 0,
+      asleep: !!who.asleep,
       held: heldCounts(who),
     });
+    const whoIndex = (who) => {
+      const index = actors.indexOf(who);
+      return index < 0 ? -1 : index;
+    };
     return {
-      players: [person(actors[0]), person(actors[1])],
+      players: actors.map(person),
       boars: boars.map((b) => [b.x, b.y, b.dir, b.state, b.energy]),
       fauna: fauna.map((a) => [a.x, a.y, a.dir, a.state, a.z || 0]),
       unicorns: unicorns.map((u) => [u.x, u.y, u.dir, u.state]),
-      bullets: bullets.map((b) => [b.x, b.y, b.kind || "gun", b.owner === actors[1] ? 1 : 0]),
+      bullets: bullets.map((b) => [b.x, b.y, b.kind || "gun", whoIndex(b.owner)]),
       gear: gear.map((item) => [
         item.x, item.y, item.held ? 1 : 0,
-        item.holder === actors[1] ? 1 : item.holder === actors[0] ? 0 : -1,
+        whoIndex(item.holder),
         item.kind,
       ]),
     };
@@ -779,6 +797,7 @@ window.addEventListener("error", (event) => {
       who.moving = src.moving;
       who.phase = src.phase;
       who.slash = src.slash || 0;
+      who.asleep = !!src.asleep;
       who.netHeld = src.held;
     });
     const copy = (list, rows, fields) => {
@@ -801,7 +820,7 @@ window.addEventListener("error", (event) => {
         item.x = row[0];
         item.y = row[1];
         item.held = row[2] === 1;
-        item.holder = row[3] === 0 ? actors[0] : row[3] === 1 ? actors[1] : null;
+        item.holder = row[3] >= 0 ? actors[row[3]] || null : null;
         item.anim = 0;
       });
     }
@@ -2035,6 +2054,9 @@ window.addEventListener("error", (event) => {
     actors[1].x = player.x + 42;
     actors[1].y = player.y + 6;
     actors[1].outsideSpot = { x: actors[1].x, y: actors[1].y };
+    actors[2].x = player.x - 36;
+    actors[2].y = player.y + 6;
+    actors[2].outsideSpot = { x: actors[2].x, y: actors[2].y };
 
     placeHouse();
     placeSpots();
@@ -2045,6 +2067,9 @@ window.addEventListener("error", (event) => {
       actors[1].x = player.x + 28;
       actors[1].y = player.y + 4;
       actors[1].outsideSpot = { x: actors[1].x, y: actors[1].y };
+      actors[2].x = player.x - 28;
+      actors[2].y = player.y + 6;
+      actors[2].outsideSpot = { x: actors[2].x, y: actors[2].y };
     }
     spawnBoars();
     spawnFauna();
@@ -2284,7 +2309,7 @@ window.addEventListener("error", (event) => {
       if (animal.kind !== "bird") {
         let threat = null;
         let best = 140;
-        const people = playerCount === 2 ? actors : [actors[0]];
+        const people = livePeople();
         for (const who of people) {
           if (who.indoors) continue;
           const dist = Math.hypot(who.x - animal.x, who.y - animal.y);
@@ -2799,37 +2824,40 @@ window.addEventListener("error", (event) => {
     if (!playerCount) return;
     if (netRole === "guest") {
       applyNetState();
-      useActor(actors[1]);
+      const me = localActor();
+      useActor(me);
       updateCamera();
       keepActor();
-      if (!actors[1].indoors) revealAround(actors[1].x, actors[1].y);
-      useActor(actors[1]);
+      if (!me.indoors) revealAround(me.x, me.y);
+      useActor(me);
       syncNet(dt);
       return;
     }
     musicTime += dt;
-    const playing = playerCount === 2 ? actors : [actors[0]];
+    const playing = livePeople();
     for (const who of playing) {
       useActor(who);
-      if (netRole === "host" && who === actors[1]) {
+      const slot = actors.indexOf(who);
+      if (netRole === "host" && slot > 0) {
+        const input = netIns[slot];
         who.pad = true;
         player._stick = {
-          x: netIn.x,
-          y: netIn.y,
-          keyboard: Math.hypot(netIn.x, netIn.y) > 0.08,
+          x: input.x,
+          y: input.y,
+          keyboard: Math.hypot(input.x, input.y) > 0.08,
         };
-        player._run = !!netIn.run;
-        if (netIn.fire) {
+        player._run = !!input.run;
+        if (input.fire) {
           shootQueued = true;
-          netIn.fire = false;
+          input.fire = false;
         }
-        if (netIn.act) {
+        if (input.act) {
           pickupNearby();
-          netIn.act = false;
+          input.act = false;
         }
-        if (netIn.weapon) {
+        if (input.weapon) {
           cycleHeld(who);
-          netIn.weapon = false;
+          input.weapon = false;
         }
       } else if (who.pad) applyPad();
       updateHero(dt);
@@ -2854,7 +2882,7 @@ window.addEventListener("error", (event) => {
     for (const who of playing) {
       if (!who.indoors) revealAround(who.x, who.y);
     }
-    useActor(netRole === "guest" ? actors[1] : actors[0]);
+    useActor(localActor());
     refreshHint();
     if (sfx.armed) musicTick();
     syncNet(dt);
@@ -2869,26 +2897,28 @@ window.addEventListener("error", (event) => {
     box.scrollTop = box.scrollHeight;
   }
 
-  function takeNetConn(conn) {
+  function takeNetConn(conn, slot) {
     netConn = conn;
     conn.on("data", (msg) => {
       if (!msg) return;
-      if (msg.type === "input") {
-        netIn.x = msg.x || 0;
-        netIn.y = msg.y || 0;
-        netIn.run = !!msg.run;
-        if (msg.fire) netIn.fire = true;
-        if (msg.act) netIn.act = true;
-        if (msg.weapon) netIn.weapon = true;
+      if (msg.type === "input" && slot) {
+        const input = netIns[slot];
+        input.x = msg.x || 0;
+        input.y = msg.y || 0;
+        input.run = !!msg.run;
+        if (msg.fire) input.fire = true;
+        if (msg.act) input.act = true;
+        if (msg.weapon) input.weapon = true;
       }
       if (msg.type === "state") {
+        if (msg.slot) netSlot = msg.slot;
         if (msg.state && msg.state.players) netState = msg.state;
         if (!playerCount && msg.seed) {
           netRole = "guest";
           netSeed = msg.seed;
           netTune = msg.tune || null;
           if (msg.mapId) mapId = msg.mapId;
-          netLog("Wchodzę do gry.");
+          netLog("Wchodzę jako gracz " + (netSlot + 1) + ".");
           startGuestGame();
         }
       }
@@ -2896,15 +2926,17 @@ window.addEventListener("error", (event) => {
   }
 
   function syncNet(dt) {
-    if (!netConn || !netConn.open) return;
     netAcc += dt;
     if (netAcc < 0.1) return;
     netAcc = 0;
     if (netRole === "host") {
-      netConn.send({ type: "state", mapId, seed: netSeed, tune, state: packNet() });
+      netConns.forEach((conn, index) => {
+        if (!conn || !conn.open) return;
+        conn.send({ type: "state", slot: index + 1, mapId, seed: netSeed, tune, state: packNet() });
+      });
       return;
     }
-    if (netRole !== "guest") return;
+    if (netRole !== "guest" || !netConn || !netConn.open) return;
     const stick = readStick();
     const body = {
       type: "input",
@@ -3258,7 +3290,8 @@ window.addEventListener("error", (event) => {
 
   function hitPlayer(bullet) {
     for (const who of actors) {
-      if (playerCount < 2 && who !== actors[0]) continue;
+      if (who.asleep) continue;
+      if (playerCount < 2 && !netRole && who !== actors[0]) continue;
       if (who === bullet.owner || who.energy <= 0) continue;
       if (!!who.indoors !== !!bullet.indoors) continue;
       const dx = bullet.x - who.x;
@@ -3723,9 +3756,9 @@ window.addEventListener("error", (event) => {
     who.target = null;
     who.outsideSpot = { x: house.x, y: house.y + 14 };
     if (who === player) outsideSpot = who.outsideSpot;
-    if (playerCount === 2) {
-      const other = who === actors[0] ? actors[1] : actors[0];
-      other.gold += loot;
+    if (playerCount === 2 || netRole) {
+      const other = livePeople().find((one) => one !== who);
+      if (other) other.gold += loot;
     }
     if (who === player) {
       indoors = true;
@@ -3757,7 +3790,7 @@ window.addEventListener("error", (event) => {
   }
 
   function updateBoars(dt) {
-    const people = playerCount === 2 ? actors : [actors[0]];
+    const people = livePeople();
     for (const boar of boars) {
       if (boar.bite > 0) boar.bite -= dt;
       if (boar.state === "carried") {
@@ -4261,8 +4294,12 @@ window.addEventListener("error", (event) => {
       return `Gracz ${n}: ${who.gold} gold · ${energyPct(who.energy, tune.energy)}% · mięso ${raw} · pieczeń ${roast}`;
     };
     if (document.body.classList.contains("phone")) {
-      const who = netRole === "guest" ? actors[1] : actors[0];
+      const who = localActor();
       el.textContent = who.gold + " $";
+      return;
+    }
+    if (netRole) {
+      el.innerHTML = livePeople().map((who) => line(who, actors.indexOf(who) + 1)).join("<br>");
       return;
     }
     el.innerHTML = playerCount === 2
@@ -5594,7 +5631,7 @@ window.addEventListener("error", (event) => {
   }
 
   function drawPhonePocket() {
-    const who = netRole === "guest" ? actors[1] : actors[0];
+    const who = localActor();
     const order = ["gun", "net", "sword", "raw", "roast"];
     const dpr = canvas.width / Math.max(1, window.innerWidth);
     const slot = Math.round(36 * dpr);
@@ -5820,8 +5857,8 @@ window.addEventListener("error", (event) => {
       up: -Math.PI / 2,
       upright: -Math.PI / 4,
     };
-    const people = playerCount === 2 ? actors : [actors[0]];
-    const colors = ["#3e8ec0", "#d4654a"];
+    const people = livePeople();
+    const colors = ["#3e8ec0", "#d4654a", "#6aaa4a"];
     people.forEach((actor, index) => {
       const at = actor.indoors ? home : spot(actor.x, actor.y);
       drawRadarArrow(at.x, at.y, angles[actor.dir] || Math.PI / 2, colors[index], dpr);
@@ -5861,7 +5898,7 @@ window.addEventListener("error", (event) => {
 
   function render(time) {
     if (netRole) {
-      const who = netRole === "guest" ? actors[1] : actors[0];
+      const who = localActor();
       useActor(who);
       view.camX = player.camX;
       view.camY = player.camY;
@@ -6017,7 +6054,8 @@ window.addEventListener("error", (event) => {
       if (butterfly.state === "ground" && !butterfly.inside) drawables.push({ rest: butterfly, x: butterfly.x, y: butterfly.y });
     }
     for (const who of actors) {
-      if (playerCount !== 2 && who.pad) continue;
+      if (who.asleep) continue;
+      if (!netRole && playerCount !== 2 && who.pad) continue;
       if (who.indoors) continue;
       drawables.push({ hero: who, x: who.x, y: who.y });
     }
@@ -6096,7 +6134,8 @@ window.addEventListener("error", (event) => {
 
   function drawIndoorHeroes(ctx, time) {
     for (const who of actors) {
-      if (playerCount !== 2 && who.pad) continue;
+      if (who.asleep) continue;
+      if (!netRole && playerCount !== 2 && who.pad) continue;
       if (!who.indoors) continue;
       drawOneHero(ctx, who, time);
     }
@@ -6188,6 +6227,7 @@ window.addEventListener("error", (event) => {
       if (netTune) Object.assign(tune, netTune);
       actors[0].energy = tune.energy;
       actors[1].energy = tune.energy;
+      actors[2].energy = tune.energy;
       const menu = document.getElementById("menu");
       if (menu) menu.hidden = true;
       showLoad(0);
@@ -6285,8 +6325,18 @@ window.addEventListener("error", (event) => {
       netPeer = new Peer(netCode);
       netPeer.on("open", () => netLog("Kod pokoju: " + netCode));
       netPeer.on("connection", (conn) => {
-        takeNetConn(conn);
-        conn.on("open", () => netLog("Dołączył: " + (conn.peer || "gracz")));
+        let slot = netConns.findIndex((open) => open && open.peer === conn.peer);
+        if (slot < 0) slot = netConns.findIndex((open) => !open || !open.open);
+        if (slot < 0) {
+          netLog("Pokój pełny. Mogą dołączyć dwie osoby.");
+          conn.close();
+          return;
+        }
+        netConns[slot] = conn;
+        actors[slot + 1].asleep = false;
+        takeNetConn(conn, slot + 1);
+        conn.on("open", () => netLog("Dołączył gracz " + (slot + 2) + ": " + (conn.peer || "")));
+        conn.on("close", () => netLog("Gracz " + (slot + 2) + " rozłączony."));
       });
       netPeer.on("error", () => {
         if (netPeer && netPeer.open) return;
@@ -6617,6 +6667,11 @@ window.addEventListener("error", (event) => {
     "62,142,192": [212, 101, 74],
     "44,104,148": [156, 62, 48],
     "142,196,228": [240, 168, 130],
+  });
+  actors[2].sprites = tintPack(chars, {
+    "62,142,192": [92, 150, 72],
+    "44,104,148": [52, 96, 44],
+    "142,196,228": [186, 214, 150],
   });
   treeSprites = [0, 1, 2].map(bakeTree);
   pineSprites = [0, 1, 2].map(bakePine);
